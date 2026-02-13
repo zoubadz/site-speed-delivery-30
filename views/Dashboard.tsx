@@ -8,23 +8,89 @@ import {
   ChevronRight, Timer, AlertTriangle, Home, Menu, Grid, BarChart3,
   Banknote, Shield, PieChart, TrendingUp, Coins, Send, Printer,
   CalendarDays, Activity, Loader2, FileQuestion, Receipt, Calculator,
-  Power, PowerOff, UserCheck, UserX
+  Power, PowerOff, UserCheck, UserX, Cloud, CloudOff, Volume2, Play, Square, Music,
+  CheckCheck
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
-import { ViewState, DashboardStat, Worker, Order, Notification, Expense } from '../types';
+import { ViewState, DashboardStat, Worker, Order, Notification as AppNotification, Expense } from '../types';
 import Logo from '../components/Logo';
 import { MOCK_STATS_ADMIN, MOCK_STATS_WORKER, INITIAL_WORKERS, INITIAL_ORDERS } from '../constants';
 import Button from '../components/Button';
 import { motion, AnimatePresence } from 'framer-motion';
+import { DB, isCloudActive } from '../services/db';
 
 // Fix for TS errors
 const MotionDiv = motion.div as any;
 const MotionButton = motion.button as any;
+const MotionSpan = motion.span as any;
+
+// --- ANIMATED ICONS COMPONENT ---
+const AnimatedStatusIcon = ({ status, size = 20 }: { status: string, size?: number }) => {
+  switch (status) {
+    case 'pending':
+      return (
+        <div className="relative flex items-center justify-center">
+          <MotionDiv
+            animate={{ scale: [1, 1.2, 1], opacity: [0.5, 1, 0.5] }}
+            transition={{ duration: 2, repeat: Infinity }}
+            className="absolute bg-orange-500/30 rounded-full w-full h-full"
+          />
+          <MotionDiv
+            animate={{ rotate: [0, 10, -10, 0] }}
+            transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
+            className="text-orange-500 relative z-10"
+          >
+            <Clock size={size} />
+          </MotionDiv>
+        </div>
+      );
+    case 'accepted':
+      return (
+        <div className="relative flex items-center justify-center overflow-hidden w-8 h-8">
+           <MotionDiv
+             animate={{ x: [-2, 2, -2] }}
+             transition={{ duration: 0.2, repeat: Infinity, ease: "linear" }}
+             className="text-blue-500 relative z-10"
+           >
+             <Bike size={size} />
+           </MotionDiv>
+           <MotionDiv 
+             className="absolute bottom-1 right-0 w-4 h-0.5 bg-blue-400/50 rounded-full"
+             animate={{ x: [10, -10], opacity: [0, 1, 0] }}
+             transition={{ duration: 0.8, repeat: Infinity }}
+           />
+        </div>
+      );
+    case 'delivered':
+      return (
+        <div className="relative flex items-center justify-center">
+           <MotionDiv
+             initial={{ scale: 0 }}
+             animate={{ scale: 1 }}
+             transition={{ type: "spring", stiffness: 200, damping: 10 }}
+             className="text-green-500"
+           >
+             <CheckCircle size={size} strokeWidth={2.5} />
+           </MotionDiv>
+           <MotionDiv
+             initial={{ opacity: 0, scale: 0.5 }}
+             animate={{ opacity: 0, scale: 2 }}
+             transition={{ duration: 0.8, repeat: Infinity }}
+             className="absolute inset-0 border border-green-500 rounded-full"
+           />
+        </div>
+      );
+    case 'cancelled':
+        return <XCircle size={size} className="text-red-500" />;
+    default:
+      return <div className="w-5 h-5 rounded-full bg-slate-700" />;
+  }
+};
 
 const StatusBadge = ({ status }: { status: string }) => {
   const styles = {
-    pending: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20',
+    pending: 'bg-orange-500/10 text-orange-500 border-orange-500/20',
     accepted: 'bg-blue-500/10 text-blue-500 border-blue-500/20',
     delivered: 'bg-green-500/10 text-green-500 border-green-500/20',
     cancelled: 'bg-red-500/10 text-red-500 border-red-500/20',
@@ -38,11 +104,25 @@ const StatusBadge = ({ status }: { status: string }) => {
   };
 
   return (
-    <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${styles[status as keyof typeof styles]}`}>
+    <span className={`px-2 py-0.5 rounded text-[10px] font-bold border flex items-center gap-1 ${styles[status as keyof typeof styles]}`}>
       {labels[status as keyof typeof labels]}
     </span>
   );
 };
+
+// --- SOUND PRESETS ---
+const SOUND_PRESETS = [
+    { id: 'tone-1', name: 'الكلاسيكي (Classic)', description: 'تنبيه مزدوج قياسي' },
+    { id: 'tone-2', name: 'رقمي (Digital)', description: 'نغمة تكنولوجية سريعة' },
+    { id: 'tone-3', name: 'النجاح (Success)', description: 'نغمة إنجاز مفرحة' },
+    { id: 'tone-4', name: 'تحذير (Alert)', description: 'صفارة إنذار منخفضة' },
+    { id: 'tone-5', name: 'فضائي (Cosmic)', description: 'صدى صوتي مستقبلي' },
+    { id: 'tone-6', name: 'عملة (Coin)', description: 'صوت جمع النقاط' },
+    { id: 'tone-7', name: 'ليزر (Laser)', description: 'شعاع سريع' },
+    { id: 'tone-8', name: 'هاتف (Old Phone)', description: 'رنين هاتف قديم' },
+    { id: 'tone-9', name: 'ناعم (Soft)', description: 'نغمة هادئة' },
+    { id: 'tone-10', name: 'عاجل (Urgent)', description: 'تنبيه متكرر للطوارئ' },
+];
 
 // --- Extracted NavigationDock Component ---
 interface NavigationDockProps {
@@ -194,6 +274,7 @@ interface FinancialSummary {
 }
 
 interface ReportData {
+  type: 'global' | 'worker-admin' | 'worker-daily';
   title: string;
   subtitle: string;
   worker?: Worker;
@@ -202,6 +283,9 @@ interface ReportData {
   financials?: FinancialSummary;
   stats: { label: string; value: string; color: string }[];
   date: string;
+  // New: For global report grouping
+  groupedOrders?: Record<string, Order[]>;
+  totalOfficeShare?: number;
 }
 
 const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) => {
@@ -257,152 +341,235 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
     };
   }, []);
 
-  // --- State Management ---
-  const [workers, setWorkers] = useState<Worker[]>(() => {
-    const savedWorkers = localStorage.getItem('speed_delivery_workers');
-    return savedWorkers ? JSON.parse(savedWorkers) : (INITIAL_WORKERS.length > 0 ? INITIAL_WORKERS : []);
-  });
-  
-  const [orders, setOrders] = useState<Order[]>(() => {
-    const savedOrders = localStorage.getItem('speed_delivery_orders');
-    return savedOrders ? JSON.parse(savedOrders) : INITIAL_ORDERS;
-  });
+  // --- Data Management (Realtime from DB) ---
+  const [workers, setWorkers] = useState<Worker[]>([]);
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [expenses, setExpenses] = useState<Expense[]>([]);
 
-  const [expenses, setExpenses] = useState<Expense[]>(() => {
-    const savedExpenses = localStorage.getItem('speed_delivery_expenses');
-    return savedExpenses ? JSON.parse(savedExpenses) : [];
-  });
+  // Subscribe to Data
+  useEffect(() => {
+    // These functions return unsubscribe handlers
+    const unsubWorkers = DB.subscribeToWorkers(setWorkers);
+    const unsubOrders = DB.subscribeToOrders(setOrders);
+    const unsubExpenses = DB.subscribeToExpenses(setExpenses);
 
-  const [notifications, setNotifications] = useState<Notification[]>([]);
+    return () => {
+        if(unsubWorkers) (unsubWorkers as any)();
+        if(unsubOrders) (unsubOrders as any)();
+        if(unsubExpenses) (unsubExpenses as any)();
+    };
+  }, []);
+
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [incomingOrder, setIncomingOrder] = useState<Order | null>(null);
   
   const [reportData, setReportData] = useState<ReportData | null>(null);
   const [generatingReportId, setGeneratingReportId] = useState<string | null>(null);
-
-  useEffect(() => {
-    localStorage.setItem('speed_delivery_workers', JSON.stringify(workers));
-  }, [workers]);
-
-  useEffect(() => {
-    localStorage.setItem('speed_delivery_orders', JSON.stringify(orders));
-  }, [orders]);
-
-  useEffect(() => {
-    localStorage.setItem('speed_delivery_expenses', JSON.stringify(expenses));
-  }, [expenses]);
   
   // --- NOTIFICATION & SOUND LOGIC ---
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const oscillatorRef = useRef<OscillatorNode | null>(null);
+  const [previewPlayingId, setPreviewPlayingId] = useState<string | null>(null);
+
   useEffect(() => {
     if (role === 'worker' && "Notification" in window) {
-      if (Notification.permission !== "granted" && Notification.permission !== "denied") {
-        Notification.requestPermission();
+      if (window.Notification.permission !== "granted" && window.Notification.permission !== "denied") {
+        window.Notification.requestPermission();
       }
     }
   }, [role]);
 
-  const playNotificationSound = () => {
-    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-    const now = audioContext.currentTime;
+  // Advanced Tone Generator
+  const playToneById = (soundId: string, duration: number = 2) => {
+      if (!audioContextRef.current) {
+          audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      }
+      const ctx = audioContextRef.current;
+      
+      // Stop previous if playing
+      if (oscillatorRef.current) {
+          try { oscillatorRef.current.stop(); } catch(e){}
+          oscillatorRef.current = null;
+      }
 
-    const playTone = (freq: number, type: 'sine' | 'square', startTime: number, duration: number) => {
-      const oscillator = audioContext.createOscillator();
-      const gainNode = audioContext.createGain();
+      const now = ctx.currentTime;
+      const gainNode = ctx.createGain();
+      gainNode.connect(ctx.destination);
       
-      oscillator.type = type;
-      oscillator.frequency.setValueAtTime(freq, startTime);
-      
-      gainNode.gain.setValueAtTime(0.1, startTime);
-      gainNode.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
-      
-      oscillator.connect(gainNode);
-      gainNode.connect(audioContext.destination);
-      
-      oscillator.start(startTime);
-      oscillator.stop(startTime + duration);
-    };
+      const createOsc = (type: OscillatorType, freq: number, startTime: number, stopTime: number) => {
+          const osc = ctx.createOscillator();
+          osc.type = type;
+          osc.frequency.setValueAtTime(freq, startTime);
+          osc.connect(gainNode);
+          osc.start(startTime);
+          osc.stop(stopTime);
+          return osc;
+      };
 
-    playTone(880, 'square', now, 0.1);       
-    playTone(660, 'square', now + 0.15, 0.1); 
-    playTone(880, 'square', now + 0.3, 0.4);  
-    
-    setTimeout(() => {
-       const now2 = audioContext.currentTime;
-       playTone(880, 'square', now2, 0.1);
-       playTone(660, 'square', now2 + 0.15, 0.1);
-       playTone(880, 'square', now2 + 0.3, 0.4);
-    }, 1000);
+      // Sound Recipes
+      switch (soundId) {
+          case 'status-accepted': // Pleasant ascending chime
+              gainNode.gain.setValueAtTime(0.1, now);
+              gainNode.gain.linearRampToValueAtTime(0, now + 1);
+              createOsc('sine', 440, now, now + 0.2); // A4
+              createOsc('sine', 554.37, now + 0.1, now + 0.3); // C#5
+              createOsc('sine', 659.25, now + 0.2, now + 0.6); // E5
+              break;
+          case 'status-delivered': // Soft success bell
+              gainNode.gain.setValueAtTime(0.1, now);
+              gainNode.gain.exponentialRampToValueAtTime(0.001, now + 1.5);
+              createOsc('sine', 880, now, now + 1.5); // A5
+              createOsc('triangle', 1760, now, now + 1.5); // A6 (harmonic)
+              break;
+          case 'tone-2': // Digital
+              gainNode.gain.setValueAtTime(0.2, now);
+              createOsc('square', 800, now, now + 0.1);
+              createOsc('square', 1200, now + 0.1, now + 0.2);
+              createOsc('square', 800, now + 0.2, now + 0.3);
+              createOsc('square', 1200, now + 0.3, now + 0.4);
+              break;
+          // ... (Existing tones 3-10 remain same) ...
+          case 'tone-3': // Success
+              gainNode.gain.setValueAtTime(0.1, now);
+              createOsc('sine', 523.25, now, now + 0.1); 
+              createOsc('sine', 659.25, now + 0.1, now + 0.2); 
+              createOsc('sine', 783.99, now + 0.2, now + 0.4); 
+              createOsc('sine', 1046.50, now + 0.4, now + 0.8); 
+              break;
+          case 'tone-4': // Alert
+              gainNode.gain.setValueAtTime(0.2, now);
+              createOsc('sawtooth', 150, now, now + 0.3);
+              createOsc('sawtooth', 100, now + 0.3, now + 0.6);
+              break;
+          case 'tone-5': // Cosmic
+               gainNode.gain.setValueAtTime(0.1, now);
+               const osc5 = ctx.createOscillator();
+               osc5.type = 'sine';
+               osc5.frequency.setValueAtTime(200, now);
+               osc5.frequency.linearRampToValueAtTime(800, now + 0.5);
+               osc5.connect(gainNode);
+               osc5.start(now);
+               osc5.stop(now + 1);
+               break;
+          case 'tone-6': // Coin
+              gainNode.gain.setValueAtTime(0.1, now);
+              createOsc('sine', 987, now, now + 0.1); 
+              createOsc('sine', 1318, now + 0.1, now + 0.5); 
+              break;
+          case 'tone-7': // Laser
+              gainNode.gain.setValueAtTime(0.1, now);
+              const osc7 = ctx.createOscillator();
+              osc7.type = 'sawtooth';
+              osc7.frequency.setValueAtTime(800, now);
+              osc7.frequency.exponentialRampToValueAtTime(100, now + 0.3);
+              osc7.connect(gainNode);
+              osc7.start(now);
+              osc7.stop(now + 0.3);
+              break;
+          case 'tone-8': // Old Phone
+              gainNode.gain.setValueAtTime(0.15, now);
+              const osc8 = ctx.createOscillator();
+              const lfo8 = ctx.createOscillator();
+              lfo8.frequency.value = 20; 
+              const lfoGain = ctx.createGain();
+              lfoGain.gain.value = 500;
+              lfo8.connect(lfoGain);
+              lfoGain.connect(osc8.frequency);
+              osc8.type = 'triangle';
+              osc8.frequency.value = 700;
+              osc8.connect(gainNode);
+              lfo8.start(now);
+              osc8.start(now);
+              lfo8.stop(now + 1);
+              osc8.stop(now + 1);
+              break;
+          case 'tone-9': // Soft
+              gainNode.gain.setValueAtTime(0.1, now);
+              gainNode.gain.linearRampToValueAtTime(0, now + 1.5);
+              createOsc('triangle', 330, now, now + 1.5);
+              break;
+          case 'tone-10': // Urgent
+              gainNode.gain.setValueAtTime(0.2, now);
+              for(let i=0; i<5; i++) {
+                  createOsc('square', 880, now + (i*0.15), now + (i*0.15) + 0.1);
+              }
+              break;
+          default: // tone-1 (Classic)
+              gainNode.gain.setValueAtTime(0.1, now);
+              gainNode.gain.exponentialRampToValueAtTime(0.001, now + 0.6);
+              createOsc('square', 880, now, now + 0.1);
+              createOsc('square', 660, now + 0.15, now + 0.25);
+              createOsc('square', 880, now + 0.3, now + 0.6);
+              break;
+      }
+  };
+
+  const playNotificationSound = (soundId?: string) => {
+    const effectiveSound = soundId || 'tone-1';
+    playToneById(effectiveSound);
+    setTimeout(() => playToneById(effectiveSound), 800);
+    setTimeout(() => playToneById(effectiveSound), 1600);
   };
 
   const showSystemNotification = (order: Order) => {
     if ("Notification" in window && Notification.permission === "granted") {
       try {
-        const notif = new Notification("📦 طلب توصيل جديد!", {
-          body: `من: ${order.fromLocation} \nإلى: ${order.toLocation} \nالسعر: ${order.price} DA`,
-          icon: '/vite.svg', 
-          tag: order.id, 
-          requireInteraction: true 
+        new Notification("طلب جديد!", {
+          body: `من: ${order.fromLocation} إلى: ${order.toLocation} (${order.price} DA)`,
+          dir: 'rtl',
+          tag: order.id
         });
-        notif.onclick = () => { window.focus(); notif.close(); };
-      } catch (e) { console.error("Notification error:", e); }
+      } catch (e) {
+        console.error("System notification failed", e);
+      }
     }
   };
 
+  // --- ORDER MONITORING & SOUNDS ---
+  const prevOrdersRef = useRef<Order[]>([]);
+  
   useEffect(() => {
-    if (role === 'worker' && currentUser) {
-      const intervalId = setInterval(() => {
-        const storedOrdersStr = localStorage.getItem('speed_delivery_orders');
-        if (storedOrdersStr) {
-          const storedOrders: Order[] = JSON.parse(storedOrdersStr);
-          const currentMyPending = orders.filter(o => o.workerId === currentUser.id && o.status === 'pending');
-          const newMyPending = storedOrders.filter(o => o.workerId === currentUser.id && o.status === 'pending');
-          
-          if (newMyPending.length > currentMyPending.length) {
-             const newOrder = newMyPending.find(no => !currentMyPending.some(co => co.id === no.id));
-             if (newOrder) {
-               setIncomingOrder(newOrder);
-               playNotificationSound();
-               showSystemNotification(newOrder);
-               if (navigator.vibrate) navigator.vibrate([500, 200, 500, 200, 1000]); 
-             }
-          }
-          if (JSON.stringify(storedOrders) !== JSON.stringify(orders)) {
-             setOrders(storedOrders);
-          }
-        }
-      }, 2000); 
-      return () => clearInterval(intervalId);
-    }
-  }, [role, currentUser, orders]);
+    // Detect status changes and play sounds (For Admin and Worker)
+    const currentOrders = orders;
+    const prevOrders = prevOrdersRef.current;
 
-  useEffect(() => {
-    if (role === 'admin') {
-      const intervalId = setInterval(() => {
-        const storedOrdersStr = localStorage.getItem('speed_delivery_orders');
-        if (storedOrdersStr) {
-          const storedOrders: Order[] = JSON.parse(storedOrdersStr);
-          setOrders(currentOrders => {
-             if (JSON.stringify(currentOrders) !== JSON.stringify(storedOrders)) return storedOrders;
-             return currentOrders;
-          });
-        }
-        const storedWorkersStr = localStorage.getItem('speed_delivery_workers');
-        if (storedWorkersStr) {
-           const storedWorkers: Worker[] = JSON.parse(storedWorkersStr);
-           setWorkers(currentWorkers => {
-              if (JSON.stringify(currentWorkers) !== JSON.stringify(storedWorkers)) return storedWorkers;
-              return currentWorkers;
-           });
-        }
-      }, 3000);
-      return () => clearInterval(intervalId);
+    if (prevOrders.length > 0) {
+        currentOrders.forEach(order => {
+            const oldOrder = prevOrders.find(o => o.id === order.id);
+            if (oldOrder && oldOrder.status !== order.status) {
+                // Status Changed!
+                if (order.status === 'accepted') {
+                    playToneById('status-accepted');
+                } else if (order.status === 'delivered') {
+                    playToneById('status-delivered');
+                }
+            }
+        });
     }
-  }, [role]);
+
+    // New Order Logic (Existing)
+    if (role === 'worker' && currentUser) {
+        const prevPending = prevOrders.filter(o => o.workerId === currentUser.id && o.status === 'pending');
+        const currentPending = currentOrders.filter(o => o.workerId === currentUser.id && o.status === 'pending');
+        
+        if (currentPending.length > prevPending.length) {
+            const newOrder = currentPending.find(curr => !prevPending.some(prev => prev.id === curr.id));
+            if (newOrder) {
+                setIncomingOrder(newOrder);
+                const workerProfile = workers.find(w => w.id === currentUser.id);
+                playNotificationSound(workerProfile?.notificationSound || 'tone-1');
+                showSystemNotification(newOrder);
+                if (navigator.vibrate) navigator.vibrate([500, 200, 500, 200, 1000]); 
+            }
+        }
+    }
+    prevOrdersRef.current = currentOrders;
+  }, [orders, role, currentUser, workers]);
 
   const setWorkerAvailability = (status: 'active' | 'suspended') => {
     if (!currentUser) return;
-    setWorkers(prev => prev.map(w => 
-      w.id === currentUser.id ? { ...w, status } : w
-    ));
+    const updatedWorker = { ...currentUser, status };
+    DB.saveWorker(updatedWorker);
   };
 
   const triggerPdfGeneration = async (filename: string) => {
@@ -452,41 +619,58 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
 
   const prepareGlobalReport = () => {
     setGeneratingReportId('global');
-    const totalRevenue = orders.filter(o => o.status === 'delivered').reduce((acc, curr) => acc + curr.price, 0);
-    const workerShare = Math.round(totalRevenue * (2/3));
-    const companyShare = totalRevenue - workerShare;
+    const deliveredOrders = orders.filter(o => o.status === 'delivered');
+    const totalRevenue = deliveredOrders.reduce((acc, curr) => acc + curr.price, 0);
+    const totalOfficeShare = Math.round(totalRevenue / 3);
+
+    const ordersByWorker: Record<string, Order[]> = {};
+    deliveredOrders.forEach(order => {
+        const workerId = order.workerId || 'unknown';
+        if (!ordersByWorker[workerId]) {
+            ordersByWorker[workerId] = [];
+        }
+        ordersByWorker[workerId].push(order);
+    });
+
     setReportData({
-      title: "التقرير المالي العام",
-      subtitle: "ملخص شامل لجميع العمليات والطلبات",
-      orders: orders,
+      type: 'global',
+      title: "التقرير المالي العام للإدارة",
+      subtitle: "ملخص أرباح المكتب من السائقين (1/3)",
+      orders: deliveredOrders,
       date: new Date().toLocaleDateString('ar-DZ'),
-      stats: [
-        { label: "إجمالي الإيرادات", value: `${totalRevenue} DA`, color: "text-slate-800" },
-        { label: "مستحقات العمال (2/3)", value: `${workerShare} DA`, color: "text-green-600" },
-        { label: "حصة الشركة (1/3)", value: `${companyShare} DA`, color: "text-blue-600" },
-        { label: "إجمالي الطلبات", value: orders.length.toString(), color: "text-slate-600" },
-      ]
+      stats: [],
+      groupedOrders: ordersByWorker,
+      totalOfficeShare: totalOfficeShare
     });
   };
 
   const prepareWorkerReport = (worker: Worker) => {
     setGeneratingReportId(worker.id);
-    const workerOrders = orders.filter(o => o.workerId === worker.id);
-    const totalEarnings = workerOrders.filter(o => o.status === 'delivered').reduce((acc, curr) => acc + curr.price, 0);
-    const workerProfit = Math.round(totalEarnings * (2/3));
-    const companyProfit = totalEarnings - workerProfit;
+    const workerOrders = orders.filter(o => o.workerId === worker.id && o.status === 'delivered');
+    const totalEarnings = workerOrders.reduce((acc, curr) => acc + curr.price, 0);
+    
+    const officeShare = Math.round(totalEarnings / 3);
+    const workerShare = totalEarnings - officeShare; 
+
     setReportData({
+      type: 'worker-admin',
       title: `تقرير أداء العامل: ${worker.name}`,
-      subtitle: `رقم الهاتف: ${worker.phone}`,
+      subtitle: `تقسيم الأرباح (1/3 للمكتب - 2/3 للعامل)`,
       worker: worker,
       orders: workerOrders,
       date: new Date().toLocaleDateString('ar-DZ'),
-      stats: [
-        { label: "إجمالي المحصل", value: `${totalEarnings} DA`, color: "text-slate-800" },
-        { label: "صافي الربح (2/3)", value: `${workerProfit} DA`, color: "text-green-600" },
-        { label: "مستحقات الشركة (1/3)", value: `${companyProfit} DA`, color: "text-red-600" },
-        { label: "الطلبات المنجزة", value: worker.ordersCompleted.toString(), color: "text-slate-600" },
-      ]
+      stats: [],
+      financials: {
+        openingBalance: 0,
+        totalDelivery: totalEarnings,
+        officeShare: officeShare,
+        workerGrossShare: workerShare,
+        totalExpenses: 0, 
+        netCashHand: 0,
+        totalLiquidity: 0,
+        workerEquity: 0,
+        workerNetProfit: 0
+      }
     });
   };
 
@@ -510,6 +694,7 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
     const workerEquity = openingBalance + workerNetProfit; 
 
     setReportData({
+      type: 'worker-daily',
       title: "كشف حساب يومي",
       subtitle: `السائق: ${currentWorker.name}`,
       worker: currentWorker,
@@ -534,8 +719,8 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
   useEffect(() => {
     if (reportData) {
        const filename = reportData.worker 
-          ? `Daily_Report_${reportData.worker.name.replace(/\s/g, '_')}_${Date.now()}.pdf`
-          : `Global_Report_${Date.now()}.pdf`;
+          ? `Report_${reportData.worker.name.replace(/\s/g, '_')}_${Date.now()}.pdf`
+          : `Global_Admin_Report_${Date.now()}.pdf`;
        triggerPdfGeneration(filename);
     }
   }, [reportData]);
@@ -553,9 +738,12 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
   const [workerForm, setWorkerForm] = useState({ name: '', phone: '', password: '', status: 'active' as 'active' | 'suspended' });
   const [orderForm, setOrderForm] = useState({ from: '', to: '', price: '', phone: '', workerId: '', description: '' });
+  
+  const [isSoundModalOpen, setIsSoundModalOpen] = useState(false);
+  const [previewInterval, setPreviewInterval] = useState<any>(null);
 
   const addNotification = (workerName: string, action: string, orderId: string, type: 'info' | 'success' | 'warning') => {
-    const newNotif: Notification = { id: Date.now().toString(), workerName, action, orderId, time: new Date().toLocaleTimeString('ar-DZ'), type };
+    const newNotif: AppNotification = { id: Date.now().toString(), workerName, action, orderId, time: new Date().toLocaleTimeString('ar-DZ'), type };
     setNotifications(prev => [newNotif, ...prev]);
   };
 
@@ -564,40 +752,44 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
     if (incomingOrder && incomingOrder.id === orderId) setIncomingOrder(null);
     const orderIndex = orders.findIndex(o => o.id === orderId);
     if (orderIndex === -1) return;
-    const updatedOrders = [...orders];
-    const order = updatedOrders[orderIndex];
+    
+    const updatedOrder = { ...orders[orderIndex] };
+    
     if (action === 'accept') {
-      order.status = 'accepted';
+      updatedOrder.status = 'accepted';
       addNotification('النظام', 'تم قبول المهمة وبدء التوصيل', orderId, 'info');
     } else if (action === 'reject') {
-      order.status = 'cancelled'; 
-      order.workerId = null; 
+      updatedOrder.status = 'cancelled'; 
+      updatedOrder.workerId = null; 
       addNotification('النظام', 'قام العامل برفض الطلب', orderId, 'warning');
     } else if (action === 'deliver') {
-      order.status = 'delivered';
+      updatedOrder.status = 'delivered';
       addNotification('النظام', 'تم توصيل الطلب بنجاح', orderId, 'success');
-      const updatedWorkers = workers.map(w => {
-        if (w.id === currentUser.id) {
-          return { ...w, ordersCompleted: w.ordersCompleted + 1, totalEarnings: w.totalEarnings + order.price };
-        }
-        return w;
-      });
-      setWorkers(updatedWorkers);
+      
+      const worker = workers.find(w => w.id === currentUser.id);
+      if (worker) {
+         const updatedWorker = { 
+             ...worker, 
+             ordersCompleted: (worker.ordersCompleted || 0) + 1, 
+             totalEarnings: (worker.totalEarnings || 0) + updatedOrder.price 
+         };
+         DB.saveWorker(updatedWorker);
+      }
     }
-    setOrders(updatedOrders);
+    DB.saveOrder(updatedOrder);
   };
 
   const handleSaveExpense = (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentUser) return;
     const newExpense: Expense = { id: `EXP-${Date.now()}`, workerId: currentUser.id, title: expenseForm.title, amount: parseFloat(expenseForm.amount), date: new Date().toLocaleDateString('ar-DZ'), time: new Date().toLocaleTimeString('ar-DZ') };
-    setExpenses(prev => [newExpense, ...prev]);
+    DB.saveExpense(newExpense);
     setIsExpenseModalOpen(false);
     setExpenseForm({ title: '', amount: '' });
   };
 
   const handleDeleteExpense = (id: string) => {
-    if (window.confirm('هل أنت متأكد من حذف هذا المصروف؟')) setExpenses(expenses.filter(e => e.id !== id));
+    if (window.confirm('هل أنت متأكد من حذف هذا المصروف؟')) DB.deleteExpense(id);
   };
 
   const openWorkerModal = (worker?: Worker) => {
@@ -615,12 +807,20 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
     e.preventDefault();
     const isPhoneDuplicate = workers.some(w => w.phone === workerForm.phone && w.id !== editingWorker?.id);
     if (isPhoneDuplicate) { alert('خطأ: رقم الهاتف مسجل مسبقاً لعامل آخر.'); return; }
+    
     if (editingWorker) {
-      setWorkers(workers.map(w => w.id === editingWorker.id ? { ...w, name: workerForm.name, phone: workerForm.phone, password: workerForm.password ? workerForm.password : w.password, status: w.status } : w));
+      const updatedWorker: Worker = {
+          ...editingWorker,
+          name: workerForm.name,
+          phone: workerForm.phone,
+          password: workerForm.password ? workerForm.password : editingWorker.password,
+          status: editingWorker.status // preserve status in edit, or use form if added to form
+      };
+      DB.saveWorker(updatedWorker);
     } else {
       const newId = `W-${Math.floor(Math.random() * 10000)}`;
-      const newWorker: Worker = { id: newId, name: workerForm.name, phone: workerForm.phone, password: workerForm.password, status: 'active', ordersCompleted: 0, totalEarnings: 0, openingBalance: 0, lastLogin: 'لم يسجل دخول بعد' };
-      setWorkers([...workers, newWorker]);
+      const newWorker: Worker = { id: newId, name: workerForm.name, phone: workerForm.phone, password: workerForm.password, status: 'active', ordersCompleted: 0, totalEarnings: 0, openingBalance: 0, lastLogin: 'لم يسجل دخول بعد', notificationSound: 'tone-1' };
+      DB.saveWorker(newWorker);
     }
     setIsWorkerModalOpen(false);
   };
@@ -637,7 +837,10 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
     const inputValue = balanceForm.amount;
     const newBalance = inputValue === '' ? 0 : parseFloat(inputValue);
     if (isNaN(newBalance)) { alert('الرجاء إدخال مبلغ صحيح'); return; }
-    setWorkers(workers.map(w => w.id === editingWorker.id ? { ...w, openingBalance: newBalance } : w));
+    
+    const updatedWorker = { ...editingWorker, openingBalance: newBalance };
+    DB.saveWorker(updatedWorker);
+    
     setIsBalanceModalOpen(false);
     setEditingWorker(null);
   };
@@ -649,7 +852,7 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
 
   const executeDeleteWorker = () => {
     if (deleteConfirmation.workerId) {
-      setWorkers(prev => prev.filter(w => w.id !== deleteConfirmation.workerId));
+      DB.deleteWorker(deleteConfirmation.workerId);
       setDeleteConfirmation({ isOpen: false, workerId: null, workerName: '', isSelf: false });
       if (deleteConfirmation.isSelf) onLogout();
     }
@@ -666,50 +869,33 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
     setIsOrderModalOpen(true);
   };
 
-  // Helper function for sequential ID generation
-  const getNextOrderId = () => {
-    const today = new Date();
-    const dateStr = today.toLocaleDateString('en-GB').replace(/\//g, ''); // Format: 26022024
-    const storageKey = 'speed_delivery_daily_seq';
-    
-    let seq = 1;
-    const stored = localStorage.getItem(storageKey);
-    
-    if (stored) {
-       try {
-           const data = JSON.parse(stored);
-           // If date matches today, increment sequence. Else start from 1.
-           if (data.date === dateStr) {
-              seq = data.count + 1;
-           }
-       } catch (e) {
-           console.error("Error parsing sequence", e);
-       }
-    }
-    
-    localStorage.setItem(storageKey, JSON.stringify({ date: dateStr, count: seq }));
-    // Return format: YYYYMMDD-SEQ (e.g., 26022024-1)
-    return `${dateStr}-${seq}`; 
-  };
-
-  const handleSaveOrder = (e: React.FormEvent) => {
+  const handleSaveOrder = async (e: React.FormEvent) => {
     e.preventDefault();
     const selectedWorker = workers.find(w => w.id === orderForm.workerId);
+    
     if (editingOrder) {
-      setOrders(orders.map(o => o.id === editingOrder.id ? { ...o, fromLocation: orderForm.from, toLocation: orderForm.to, price: Number(orderForm.price), customerPhone: orderForm.phone, workerId: orderForm.workerId, workerName: selectedWorker?.name, description: orderForm.description } : o));
+      const updatedOrder: Order = {
+          ...editingOrder,
+          fromLocation: orderForm.from,
+          toLocation: orderForm.to,
+          price: Number(orderForm.price),
+          customerPhone: orderForm.phone,
+          workerId: orderForm.workerId,
+          workerName: selectedWorker?.name,
+          description: orderForm.description
+      };
+      DB.saveOrder(updatedOrder);
     } else {
-      // Use the new sequential ID generator
-      const newId = getNextOrderId();
-      
+      const newId = await DB.generateOrderId();
       const newOrder: Order = { id: newId, fromLocation: orderForm.from, toLocation: orderForm.to, price: Number(orderForm.price), customerPhone: orderForm.phone, workerId: orderForm.workerId, workerName: selectedWorker?.name || 'غير محدد', status: 'pending', date: new Date().toLocaleDateString('en-GB'), time: new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' }), description: orderForm.description };
-      setOrders([newOrder, ...orders]);
+      DB.saveOrder(newOrder);
       if (selectedWorker) addNotification(selectedWorker.name, `تم إرسال طلب جديد: ${orderForm.from} ◄ ${orderForm.to} (${orderForm.price} DA)`, newId, 'info');
     }
     setIsOrderModalOpen(false);
   };
 
   const handleDeleteOrder = (id: string) => {
-    if (window.confirm('تأكيد الحذف النهائي للطلب؟')) setOrders(orders.filter(o => o.id !== id));
+    if (window.confirm('تأكيد الحذف النهائي للطلب؟')) DB.deleteOrder(id);
   };
 
   const getWorkerStats = (workerId: string) => {
@@ -719,6 +905,45 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
     const workerProfit = Math.round(totalEarnings * (2/3));
     const companyProfit = totalEarnings - workerProfit;
     return { total: workerOrders.length, completed, totalEarnings, workerProfit, companyProfit, workerOrders };
+  };
+
+  // --- Sound Preview Logic ---
+  const handlePreviewTone = (id: string) => {
+      if (previewPlayingId === id) {
+          stopPreview();
+          return;
+      }
+      stopPreview();
+      setPreviewPlayingId(id);
+      playToneById(id);
+      let counter = 0;
+      const interval = setInterval(() => {
+          if (counter >= 9) { 
+               stopPreview();
+               return;
+          }
+          playToneById(id);
+          counter++;
+      }, 1000);
+      setPreviewInterval(interval);
+  };
+
+  const stopPreview = () => {
+      if (previewInterval) clearInterval(previewInterval);
+      setPreviewPlayingId(null);
+  };
+  
+  useEffect(() => {
+      return () => { if (previewInterval) clearInterval(previewInterval); }
+  }, [previewInterval]);
+
+
+  const selectTone = (id: string) => {
+      stopPreview();
+      if (!currentUser) return;
+      const updatedWorker = { ...currentUser, notificationSound: id };
+      DB.saveWorker(updatedWorker);
+      setIsSoundModalOpen(false);
   };
 
   // --- RENDER WORKER PANEL ---
@@ -771,9 +996,6 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
               <ClipboardList size={20} className="text-slate-400" />
               المهام الحالية
             </h3>
-            <span className="text-xs text-slate-500 flex items-center gap-1 animate-pulse">
-              <RefreshCw size={10} /> تحديث تلقائي
-            </span>
           </div>
           
           <div className="space-y-4">
@@ -898,7 +1120,7 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
         </div>
       </div>
     );
-
+    // ... Other worker render methods ...
     const renderWorkerHistory = () => (
       <div className="space-y-4">
         <h3 className="font-bold text-lg mb-2 flex items-center gap-2">
@@ -953,13 +1175,14 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
                    <span className="font-black text-xl text-white">{openingBalance.toFixed(2)}</span>
                 </div>
                 <div className="grid grid-cols-2 divide-x divide-x-reverse divide-slate-700">
+                   {/* ... Same wallet grid structure ... */}
                    <div className="flex flex-col">
                       <div className="flex justify-between items-center p-3 border-b border-slate-700 bg-slate-800/50">
                          <span className="text-sm text-slate-300">مجموع التوصيل</span>
                          <span className="font-bold text-white">{deliveryTotal.toFixed(2)}</span>
                       </div>
                       <div className="flex justify-between items-center p-3 border-b border-slate-700 bg-slate-800/50">
-                         <span className="text-sm text-slate-300">فائدة مكتب التوصيل</span>
+                         <span className="text-sm text-slate-300">فائدة المكتب</span>
                          <span className="font-bold text-blue-400">{officeShare.toFixed(2)}</span>
                       </div>
                       <div className="flex justify-between items-center p-3 bg-green-900/20">
@@ -994,25 +1217,11 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
              
              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                {(!myProfile.openingBalance || myProfile.openingBalance === 0) ? (
-                 <button 
-                   onClick={() => openBalanceModal(myProfile)}
-                   className="bg-slate-700 hover:bg-slate-600 text-slate-300 py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-colors border border-slate-600"
-                 >
-                    <Plus size={16} /> إدخال الرصيد الافتتاحي
-                 </button>
+                 <button onClick={() => openBalanceModal(myProfile)} className="bg-slate-700 hover:bg-slate-600 text-slate-300 py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-colors border border-slate-600"><Plus size={16} /> إدخال الرصيد الافتتاحي</button>
                ) : (
-                 <button 
-                   onClick={() => openBalanceModal(myProfile)}
-                   className="bg-slate-700 hover:bg-slate-600 text-slate-300 py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-colors border border-slate-600"
-                 >
-                    <RefreshCw size={16} /> تعديل الرصيد الافتتاحي
-                 </button>
+                 <button onClick={() => openBalanceModal(myProfile)} className="bg-slate-700 hover:bg-slate-600 text-slate-300 py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-colors border border-slate-600"><RefreshCw size={16} /> تعديل الرصيد الافتتاحي</button>
                )}
-               
-               <button 
-                  onClick={prepareWorkerDailyReport}
-                  className="bg-slate-700 hover:bg-slate-600 text-white py-3 rounded-xl border border-slate-600 flex items-center justify-center gap-2 font-bold transition-all"
-               >
+               <button onClick={prepareWorkerDailyReport} className="bg-slate-700 hover:bg-slate-600 text-white py-3 rounded-xl border border-slate-600 flex items-center justify-center gap-2 font-bold transition-all">
                   {generatingReportId === 'daily-worker' ? <Loader2 className="animate-spin" size={18}/> : <FileText size={18} className="text-blue-400"/>}
                   <span>تصدير التقرير (PDF)</span>
                </button>
@@ -1020,49 +1229,19 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
 
              <div className="bg-slate-800 rounded-2xl border border-slate-700 overflow-hidden">
                 <div className="p-5 border-b border-slate-700 flex justify-between items-center">
-                   <h3 className="font-bold flex items-center gap-2">
-                      <Receipt size={20} className="text-red-500" />
-                      المصاريف
-                   </h3>
-                   <button 
-                     onClick={() => setIsExpenseModalOpen(true)}
-                     className="bg-red-600 hover:bg-red-500 text-white px-3 py-1.5 rounded-lg text-sm font-bold flex items-center gap-1 transition-colors shadow-lg shadow-red-600/20"
-                   >
-                      <Plus size={16} /> إضافة مصروف
-                   </button>
+                   <h3 className="font-bold flex items-center gap-2"><Receipt size={20} className="text-red-500" />المصاريف</h3>
+                   <button onClick={() => setIsExpenseModalOpen(true)} className="bg-red-600 hover:bg-red-500 text-white px-3 py-1.5 rounded-lg text-sm font-bold flex items-center gap-1 transition-colors shadow-lg shadow-red-600/20"><Plus size={16} /> إضافة مصروف</button>
                 </div>
-                
                 <div className="max-h-60 overflow-y-auto custom-scrollbar">
-                   {myExpenses.length === 0 ? (
-                      <div className="p-8 text-center text-slate-500">
-                         <Receipt size={32} className="mx-auto mb-2 opacity-20" />
-                         <p className="text-sm">لا توجد مصاريف مسجلة</p>
-                      </div>
-                   ) : (
+                   {myExpenses.length === 0 ? <div className="p-8 text-center text-slate-500"><Receipt size={32} className="mx-auto mb-2 opacity-20" /><p className="text-sm">لا توجد مصاريف مسجلة</p></div> : (
                       <table className="w-full text-right text-sm">
-                         <thead className="bg-slate-900/50 text-slate-400 sticky top-0">
-                            <tr>
-                               <th className="p-3 font-medium">التفاصيل</th>
-                               <th className="p-3 font-medium">المبلغ</th>
-                               <th className="p-3 font-medium w-10"></th>
-                            </tr>
-                         </thead>
+                         <thead className="bg-slate-900/50 text-slate-400 sticky top-0"><tr><th className="p-3 font-medium">التفاصيل</th><th className="p-3 font-medium">المبلغ</th><th className="p-3 font-medium w-10"></th></tr></thead>
                          <tbody className="divide-y divide-slate-700">
                             {myExpenses.map(expense => (
                                <tr key={expense.id} className="group hover:bg-slate-700/30 transition-colors">
-                                  <td className="p-3">
-                                     <p className="font-bold text-slate-200">{expense.title}</p>
-                                     <p className="text-[10px] text-slate-500">{expense.date} • {expense.time}</p>
-                                  </td>
+                                  <td className="p-3"><p className="font-bold text-slate-200">{expense.title}</p><p className="text-[10px] text-slate-500">{expense.date} • {expense.time}</p></td>
                                   <td className="p-3 font-bold text-red-400">-{expense.amount} DA</td>
-                                  <td className="p-3 text-center">
-                                     <button 
-                                       onClick={() => handleDeleteExpense(expense.id)}
-                                       className="text-slate-600 hover:text-red-500 transition-colors p-1"
-                                     >
-                                        <Trash2 size={14} />
-                                     </button>
-                                  </td>
+                                  <td className="p-3 text-center"><button onClick={() => handleDeleteExpense(expense.id)} className="text-slate-600 hover:text-red-500 transition-colors p-1"><Trash2 size={14} /></button></td>
                                </tr>
                             ))}
                          </tbody>
@@ -1072,25 +1251,24 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
              </div>
           </div>
         );
-    };
-    
+    }
     const renderWorkerSettings = () => (
       <div className="space-y-6">
-        <h3 className="font-bold text-lg mb-2 flex items-center gap-2">
-           <Settings size={20} className="text-slate-400" />
-           إعدادات الحساب
-        </h3>
-        
+        <h3 className="font-bold text-lg mb-2 flex items-center gap-2"><Settings size={20} className="text-slate-400" />إعدادات الحساب</h3>
         <div className="bg-slate-800 rounded-2xl p-6 border border-slate-700">
            <div className="flex items-center gap-4 mb-6">
-              <div className="w-16 h-16 rounded-full bg-slate-700 flex items-center justify-center text-2xl font-bold text-white">
-                 {myProfile.name.charAt(0)}
-              </div>
-              <div>
-                 <h3 className="font-bold text-xl">{myProfile.name}</h3>
-                 <p className="text-slate-400">{myProfile.phone}</p>
-                 <span className="inline-block mt-2 px-2 py-1 bg-green-500/10 text-green-500 text-xs rounded-full border border-green-500/20">حساب نشط</span>
-              </div>
+              <div className="w-16 h-16 rounded-full bg-slate-700 flex items-center justify-center text-2xl font-bold text-white">{myProfile.name.charAt(0)}</div>
+              <div><h3 className="font-bold text-xl">{myProfile.name}</h3><p className="text-slate-400">{myProfile.phone}</p><span className="inline-block mt-2 px-2 py-1 bg-green-500/10 text-green-500 text-xs rounded-full border border-green-500/20">حساب نشط</span></div>
+           </div>
+           <div className="border-t border-slate-700 pt-6">
+               <h4 className="font-bold text-lg mb-4 flex items-center gap-2 text-blue-400"><Volume2 size={20} />إعدادات الإشعارات</h4>
+               <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-700 flex items-center justify-between">
+                   <div className="flex items-center gap-4">
+                       <div className="w-12 h-12 rounded-full bg-blue-500/20 flex items-center justify-center text-blue-500"><Music size={24} /></div>
+                       <div><p className="font-bold text-white">نغمة التنبيه</p><p className="text-xs text-slate-400 mt-1">{SOUND_PRESETS.find(s => s.id === (myProfile.notificationSound || 'tone-1'))?.name || 'الافتراضي'}</p></div>
+                   </div>
+                   <button onClick={() => setIsSoundModalOpen(true)} className="bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-lg text-sm font-bold border border-slate-600 transition-colors">تغيير النغمة</button>
+               </div>
            </div>
         </div>
       </div>
@@ -1107,18 +1285,23 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
 
   // --- RENDER ADMIN PANEL ---
   const renderAdminPanel = () => {
-    const renderAdminOverview = () => {
+     // ... [Admin Overview, Workers, Orders logic same as before] ...
+     const renderAdminOverview = () => {
         const totalOrders = orders.length;
         const activeWorkersCount = workers.filter(w => w.status === 'active').length;
         const totalRevenue = orders.filter(o => o.status === 'delivered').reduce((acc, curr) => acc + curr.price, 0);
         const pendingOrdersCount = orders.filter(o => o.status === 'pending').length;
-        const recentOrders = orders.slice(0, 8);
+        const recentOrders = orders.slice(-8).reverse(); 
+
+        // CALCULATE ADMIN PROFIT (1/3)
+        const adminProfit = Math.round(totalRevenue / 3);
 
         const adminStats = [
             { label: 'الطلبات الكلية', value: totalOrders.toString(), color: 'bg-blue-500', icon: Package },
             { label: 'السائقين النشطين', value: activeWorkersCount.toString(), color: 'bg-green-500', icon: Bike },
             { label: 'طلبات قيد الانتظار', value: pendingOrdersCount.toString(), color: 'bg-orange-500', icon: Clock },
-            { label: 'الإيرادات (DA)', value: totalRevenue.toLocaleString(), color: 'bg-yellow-500', icon: BarChart3 },
+            // CHANGED REVENUE TO PROFITS (1/3 SHARE)
+            { label: 'الأرباح (DA)', value: adminProfit.toLocaleString(), color: 'bg-yellow-500', icon: BarChart3 },
         ];
 
         return (
@@ -1150,8 +1333,9 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
                      ) : (
                         recentOrders.map(order => (
                            <div key={order.id} className="bg-slate-900/50 p-3 rounded-xl border border-slate-700/50 flex items-center gap-3 hover:border-slate-500 transition-colors">
-                              <div className="w-10 h-10 rounded-full bg-slate-800 flex items-center justify-center font-bold text-slate-400 border border-slate-700 shrink-0">
-                                 {order.workerName ? order.workerName.charAt(0) : '?'}
+                              {/* Animated Icon Logic */}
+                              <div className="w-12 h-12 rounded-full bg-slate-800 flex items-center justify-center border border-slate-700 shrink-0">
+                                 <AnimatedStatusIcon status={order.status} />
                               </div>
                               <div className="flex-1 min-w-0">
                                  <div className="flex justify-between items-center mb-1">
@@ -1183,6 +1367,7 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
                </div>
 
                <div className="bg-slate-800 p-6 rounded-2xl border border-slate-700 h-[500px]">
+                  {/* ... Quick Actions ... */}
                   <h3 className="font-bold text-lg mb-4 flex items-center gap-2">
                      <TrendingUp size={20} className="text-green-500" />
                      إجراءات سريعة
@@ -1241,11 +1426,11 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
                   <div className="grid grid-cols-2 gap-2 mb-4 text-sm">
                      <div className="bg-slate-900/50 p-2 rounded-lg text-center">
                         <p className="text-xs text-slate-500">طلبات منجزة</p>
-                        <p className="font-bold">{worker.ordersCompleted}</p>
+                        <p className="font-bold">{worker.ordersCompleted || 0}</p>
                      </div>
                      <div className="bg-slate-900/50 p-2 rounded-lg text-center">
                         <p className="text-xs text-slate-500">أرباح (DA)</p>
-                        <p className="font-bold text-green-400">{worker.totalEarnings}</p>
+                        <p className="font-bold text-green-400">{worker.totalEarnings || 0}</p>
                      </div>
                   </div>
                   <div className="flex gap-2">
@@ -1289,7 +1474,7 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
                      </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-700">
-                     {orders.map(order => (
+                     {orders.slice().reverse().map(order => (
                         <tr key={order.id} className="hover:bg-slate-700/30 transition-colors">
                            <td className="p-4 font-mono text-sm text-slate-300" dir="ltr">{order.id}</td>
                            <td className="p-4">
@@ -1346,7 +1531,7 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
             </div>
 
             <div className="md:col-span-2 bg-slate-800 p-6 rounded-2xl border border-slate-700">
-               <h4 className="font-bold text-lg mb-4">تقارير العمال</h4>
+               <h4 className="font-bold text-lg mb-4">تقارير العمال (أرباح الشركة)</h4>
                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {workers.map(worker => (
                      <div key={worker.id} onClick={() => prepareWorkerReport(worker)} className="cursor-pointer bg-slate-900/50 p-3 rounded-xl border border-slate-700 hover:border-blue-500 flex items-center gap-3 transition-colors">
@@ -1397,11 +1582,12 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
         resetDockTimer={resetDockTimer}
       />
       
-      {/* HIDDEN REPORT TEMPLATE */}
+      {/* --- REPORT TEMPLATE START --- */}
       {reportData && (
         <div id="printable-report" className="fixed top-0 left-0 -z-50 w-[210mm] min-h-[297mm] bg-white text-slate-900 font-sans flex flex-col" dir="rtl">
            <div className="h-4 bg-slate-800 w-full"></div>
            <div className="p-10 flex-1 flex flex-col">
+              {/* Report Header */}
               <div className="flex justify-between items-center mb-8 border-b-2 border-slate-100 pb-6">
                   <div className="flex items-center gap-4">
                       <div className="w-16 h-16 bg-red-600 rounded-2xl flex items-center justify-center text-white shadow-sm">
@@ -1420,144 +1606,276 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
                   </div>
               </div>
 
-              <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 mb-8 flex justify-between items-center shadow-sm">
-                  <div>
-                      <p className="text-xs text-slate-400 font-bold">اسم السائق</p>
-                      <p className="text-xl font-bold text-slate-800">{reportData.worker?.name}</p>
-                  </div>
-                  <div className="h-8 w-px bg-slate-200 mx-4"></div>
-                  <div>
-                      <p className="text-xs text-slate-400 font-bold">رقم الهاتف</p>
-                      <p className="text-lg font-mono font-bold text-slate-700">{reportData.worker?.phone}</p>
-                  </div>
-                  <div className="h-8 w-px bg-slate-200 mx-4"></div>
-                  <div className="text-left">
-                      <p className="text-xs text-slate-400 font-bold">عدد الطلبات</p>
-                      <p className="text-xl font-black text-blue-600">{reportData.orders.length}</p>
-                  </div>
+              {/* Title Section */}
+              <div className="text-center mb-10">
+                 <h2 className="text-3xl font-bold text-slate-900 mb-2">{reportData.title}</h2>
+                 <p className="text-slate-500 font-medium">{reportData.subtitle}</p>
               </div>
 
-              <div className="flex gap-6 mb-8 flex-1 items-start">
-                  <div className="flex-1">
-                      <div className="flex items-center justify-between mb-3">
-                          <h3 className="font-bold text-slate-800 flex items-center gap-2">
-                              <Package size={18} className="text-blue-500" />
-                              قائمة التوصيلات
-                          </h3>
-                          <span className="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded font-bold">{reportData.orders.length} طلب</span>
-                      </div>
-                      <div className="border border-slate-200 rounded-lg overflow-hidden">
-                        <table className="w-full text-right text-xs">
-                            <thead>
-                                <tr className="bg-slate-100 text-slate-600 font-bold border-b border-slate-200">
-                                    <th className="p-3">إلى (الوجهة)</th>
-                                    <th className="p-3">السعر</th>
-                                    <th className="p-3 text-left">التوقيت</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-100">
-                                {reportData.orders.map((order, idx) => (
-                                    <tr key={idx} className={idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}>
-                                        <td className="p-3 font-medium text-slate-800">{order.toLocation}</td>
-                                        <td className="p-3 font-bold text-slate-900">{order.price}</td>
-                                        <td className="p-3 font-mono text-slate-500 text-left">{order.time}</td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                      </div>
-                  </div>
+              {/* --- GLOBAL REPORT CONTENT (Admin) --- */}
+              {reportData.type === 'global' && reportData.groupedOrders && (
+                <div className="flex-1">
+                   {/* Loop through workers */}
+                   {workers.map(worker => {
+                      const workerOrders = reportData.groupedOrders?.[worker.id];
+                      if (!workerOrders || workerOrders.length === 0) return null;
+                      
+                      const workerTotal = workerOrders.reduce((a, c) => a + c.price, 0);
+                      const workerOfficeShare = Math.round(workerTotal / 3);
 
-                  <div className="w-1/3">
-                      <div className="flex items-center justify-between mb-3">
-                          <h3 className="font-bold text-slate-800 flex items-center gap-2">
-                              <Receipt size={18} className="text-red-500" />
-                              المصاريف
-                          </h3>
-                          <span className="text-xs bg-red-50 text-red-600 px-2 py-1 rounded font-bold">
-                              {reportData.expenses?.length || 0}
-                          </span>
-                      </div>
-                      <div className="border border-slate-200 rounded-lg overflow-hidden">
-                        <table className="w-full text-right text-xs">
-                            <thead>
-                                <tr className="bg-slate-100 text-slate-600 font-bold border-b border-slate-200">
-                                    <th className="p-3">البيان</th>
-                                    <th className="p-3 text-left">المبلغ</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-100">
-                                {reportData.expenses && reportData.expenses.length > 0 ? (
-                                    reportData.expenses.map((expense, idx) => (
-                                        <tr key={idx} className={idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}>
-                                            <td className="p-3 text-slate-700">{expense.title}</td>
-                                            <td className="p-3 font-bold text-red-600 text-left">{expense.amount}</td>
-                                        </tr>
-                                    ))
-                                ) : (
-                                    <tr>
-                                        <td colSpan={2} className="p-4 text-center text-slate-400 italic">لا توجد مصاريف</td>
+                      return (
+                        <div key={worker.id} className="mb-8 break-inside-avoid">
+                           <div className="flex items-center justify-between bg-slate-100 p-2 rounded-t-lg border-b border-slate-300">
+                              <h3 className="font-bold text-slate-800 px-2 flex items-center gap-2">
+                                 <User size={16}/> {worker.name}
+                              </h3>
+                              <span className="text-xs font-mono bg-white px-2 py-0.5 rounded border border-slate-200">{workerOrders.length} طلبات</span>
+                           </div>
+                           <table className="w-full text-right text-xs border border-slate-200">
+                              <thead>
+                                 <tr className="bg-slate-50 text-slate-600">
+                                    <th className="p-2 border-l">رقم</th>
+                                    <th className="p-2 border-l">من</th>
+                                    <th className="p-2 border-l">إلى</th>
+                                    <th className="p-2 border-l">التوقيت</th>
+                                    <th className="p-2">السعر</th>
+                                 </tr>
+                              </thead>
+                              <tbody>
+                                 {workerOrders.map((o, i) => (
+                                    <tr key={i} className="border-t border-slate-100">
+                                       <td className="p-2 border-l font-mono text-slate-400">{o.id.split('-')[1]}</td>
+                                       <td className="p-2 border-l text-slate-600">{o.fromLocation}</td>
+                                       <td className="p-2 border-l font-bold">{o.toLocation}</td>
+                                       <td className="p-2 border-l text-slate-500 font-mono">{o.time}</td>
+                                       <td className="p-2 font-bold text-slate-800">{o.price}</td>
                                     </tr>
-                                )}
-                            </tbody>
-                        </table>
-                      </div>
-                  </div>
-              </div>
-
-              {reportData.financials && (
-                <div className="mb-4">
-                    <h3 className="font-bold text-slate-800 mb-3 flex items-center gap-2">
-                        <Calculator size={18} className="text-slate-600" />
-                        الخلاصة المالية
-                    </h3>
-                    <div className="border-2 border-slate-800 text-sm shadow-sm">
-                        <div className="flex divide-x divide-x-reverse divide-slate-800">
-                            <div className="flex-1 flex flex-col">
-                                <div className="flex divide-x divide-x-reverse divide-slate-800 border-b border-slate-800 bg-[#92D050]">
-                                    <div className="flex-1 p-2 font-bold text-center text-black">{reportData.financials.totalDelivery}</div>
-                                    <div className="w-48 p-2 font-bold text-center text-black bg-[#82C040]">مجموع التوصيل</div>
-                                </div>
-                                <div className="flex divide-x divide-x-reverse divide-slate-800 border-b border-slate-800 bg-[#92D050]">
-                                    <div className="flex-1 p-2 font-bold text-center text-black">{reportData.financials.officeShare}</div>
-                                    <div className="w-48 p-2 font-bold text-center text-black bg-[#82C040]">فائدة المكتب</div>
-                                </div>
-                                <div className="flex divide-x divide-x-reverse divide-slate-800 bg-[#92D050] flex-1">
-                                    <div className="flex-1 p-2 font-bold text-center text-black flex items-center justify-center">{reportData.financials.workerGrossShare}</div>
-                                    <div className="w-48 p-2 font-bold text-center text-black bg-[#82C040] flex items-center justify-center">الفائدة (السائق)</div>
-                                </div>
-                            </div>
-                            <div className="flex-1 flex flex-col">
-                                <div className="flex divide-x divide-x-reverse divide-slate-800 border-b border-slate-800">
-                                    <div className="flex-1 p-2 font-bold text-center text-white bg-[#00B0F0]">{reportData.financials.openingBalance}</div>
-                                    <div className="w-48 p-2 font-bold text-center text-white bg-[#0090C0]">الرصيد الافتتاحي</div>
-                                </div>
-                                <div className="flex divide-x divide-x-reverse divide-slate-800 border-b border-slate-800">
-                                    <div className="flex-1 p-2 font-bold text-center text-white bg-[#00B0F0]">{reportData.financials.totalExpenses}</div>
-                                    <div className="w-48 p-2 font-bold text-center text-white bg-[#0090C0]">مجموع المصروف</div>
-                                </div>
-                                <div className="flex divide-x divide-x-reverse divide-slate-800 border-b border-slate-800">
-                                    <div className="flex-1 p-2 font-bold text-center text-black bg-[#FFC000]">{reportData.financials.netCashHand}</div>
-                                    <div className="w-48 p-2 font-bold text-center text-black bg-[#EFA000]">الباقي من سعر الكلي</div>
-                                </div>
-                                <div className="flex divide-x divide-x-reverse divide-slate-800 border-b border-slate-800">
-                                    <div className="flex-1 p-2 font-bold text-center text-black bg-[#92D050]">{reportData.financials.totalLiquidity}</div>
-                                    <div className="w-48 p-2 font-bold text-center text-black bg-[#82C040]">السعر الكلي</div>
-                                </div>
-                                <div className="flex divide-x divide-x-reverse divide-slate-800 border-b border-slate-800">
-                                    <div className="flex-1 p-2 font-bold text-center text-black bg-[#FFC000]">{reportData.financials.workerEquity}</div>
-                                    <div className="w-48 p-2 font-bold text-center text-black bg-[#EFA000]">السعر الكلي الصافي</div>
-                                </div>
-                                <div className="flex divide-x divide-x-reverse divide-slate-800">
-                                    <div className="flex-1 p-2 font-bold text-center text-black bg-[#FFFF00]">{reportData.financials.workerNetProfit}</div>
-                                    <div className="w-48 p-2 font-bold text-center text-black bg-[#E0E000]">الباقي من الفائدة</div>
-                                </div>
-                            </div>
+                                 ))}
+                              </tbody>
+                              <tfoot className="bg-slate-50 font-bold border-t border-slate-300">
+                                 <tr>
+                                    <td colSpan={4} className="p-2 text-left text-slate-600">مجموع العامل:</td>
+                                    <td className="p-2 text-slate-900">{workerTotal} DA</td>
+                                 </tr>
+                                 <tr>
+                                    <td colSpan={4} className="p-2 text-left text-blue-600">حصة المكتب (1/3):</td>
+                                    <td className="p-2 text-blue-600">{workerOfficeShare} DA</td>
+                                 </tr>
+                              </tfoot>
+                           </table>
                         </div>
-                    </div>
+                      )
+                   })}
+
+                   {/* Grand Total */}
+                   <div className="mt-8 border-t-4 border-slate-800 pt-4 flex justify-end">
+                      <div className="w-1/2 bg-slate-100 rounded-xl p-6 border border-slate-200 shadow-sm">
+                         <div className="flex justify-between items-center mb-2">
+                            <span className="text-slate-500 font-bold">المجموع الكلي للإيرادات</span>
+                            <span className="text-xl font-bold text-slate-800">{reportData.orders.reduce((a,c)=>a+c.price,0)} DA</span>
+                         </div>
+                         <div className="flex justify-between items-center pt-2 border-t border-slate-300">
+                            <span className="text-blue-600 font-black text-lg">صافي ربح المكتب (1/3)</span>
+                            <span className="text-2xl font-black text-blue-600">{reportData.totalOfficeShare} DA</span>
+                         </div>
+                      </div>
+                   </div>
                 </div>
               )}
 
+              {/* --- INDIVIDUAL WORKER REPORT (Admin View) --- */}
+              {reportData.type === 'worker-admin' && (
+                 <div className="flex-1">
+                    {/* Worker Info */}
+                    <div className="flex items-center gap-4 mb-6 bg-slate-50 p-4 rounded-xl border border-slate-200">
+                       <div className="w-12 h-12 bg-slate-200 rounded-full flex items-center justify-center font-bold text-slate-500 text-xl">
+                          {reportData.worker?.name.charAt(0)}
+                       </div>
+                       <div>
+                          <p className="font-bold text-lg text-slate-800">{reportData.worker?.name}</p>
+                          <p className="text-slate-500 font-mono">{reportData.worker?.phone}</p>
+                       </div>
+                       <div className="mr-auto bg-white px-4 py-2 rounded-lg border border-slate-200 shadow-sm">
+                          <span className="text-xs text-slate-400 block font-bold">إجمالي الطلبات</span>
+                          <span className="text-xl font-black text-slate-800">{reportData.orders.length}</span>
+                       </div>
+                    </div>
+
+                    {/* Orders Table */}
+                    <table className="w-full text-right text-sm border-collapse mb-8">
+                       <thead>
+                          <tr className="bg-slate-800 text-white">
+                             <th className="p-3 rounded-tr-lg">رقم الطلب</th>
+                             <th className="p-3">الوجهة (إلى)</th>
+                             <th className="p-3">التوقيت</th>
+                             <th className="p-3 rounded-tl-lg">السعر</th>
+                          </tr>
+                       </thead>
+                       <tbody className="divide-y divide-slate-200 border border-slate-200">
+                          {reportData.orders.map((o, i) => (
+                             <tr key={i} className={i % 2 === 0 ? 'bg-white' : 'bg-slate-50'}>
+                                <td className="p-3 font-mono text-slate-500">{o.id.split('-')[1]}</td>
+                                <td className="p-3 font-bold text-slate-700">{o.toLocation}</td>
+                                <td className="p-3 font-mono text-slate-500">{o.time}</td>
+                                <td className="p-3 font-bold text-slate-900">{o.price}</td>
+                             </tr>
+                          ))}
+                       </tbody>
+                    </table>
+
+                    {/* Financial Summary */}
+                    {reportData.financials && (
+                       <div className="grid grid-cols-3 gap-4 text-center">
+                          <div className="bg-slate-100 p-4 rounded-xl border border-slate-200">
+                             <p className="text-slate-500 text-sm font-bold mb-1">المجموع الكلي</p>
+                             <p className="text-2xl font-bold text-slate-800">{reportData.financials.totalDelivery} DA</p>
+                          </div>
+                          <div className="bg-green-50 p-4 rounded-xl border border-green-200">
+                             <p className="text-green-600 text-sm font-bold mb-1">حصة العامل (2/3)</p>
+                             <p className="text-2xl font-bold text-green-700">{reportData.financials.workerGrossShare} DA</p>
+                          </div>
+                          <div className="bg-blue-50 p-4 rounded-xl border border-blue-200">
+                             <p className="text-blue-600 text-sm font-bold mb-1">حصة المكتب (1/3)</p>
+                             <p className="text-2xl font-bold text-blue-700">{reportData.financials.officeShare} DA</p>
+                          </div>
+                       </div>
+                    )}
+                 </div>
+              )}
+
+              {/* --- DAILY REPORT (Worker Personal) --- */}
+              {reportData.type === 'worker-daily' && (
+                  // Re-use previous complex layout for worker personal report
+                  <div className="flex-1 flex flex-col">
+                      <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 mb-8 flex justify-between items-center shadow-sm">
+                          <div>
+                              <p className="text-xs text-slate-400 font-bold">اسم السائق</p>
+                              <p className="text-xl font-bold text-slate-800">{reportData.worker?.name}</p>
+                          </div>
+                          <div className="h-8 w-px bg-slate-200 mx-4"></div>
+                          <div>
+                              <p className="text-xs text-slate-400 font-bold">رقم الهاتف</p>
+                              <p className="text-lg font-mono font-bold text-slate-700">{reportData.worker?.phone}</p>
+                          </div>
+                      </div>
+
+                      <div className="flex gap-6 mb-8 flex-1 items-start">
+                          <div className="flex-1">
+                              <h3 className="font-bold text-slate-800 mb-2 flex items-center gap-2">
+                                  <Package size={18} className="text-blue-500" />
+                                  قائمة التوصيلات
+                              </h3>
+                              <div className="border border-slate-200 rounded-lg overflow-hidden">
+                                <table className="w-full text-right text-xs">
+                                    <thead>
+                                        <tr className="bg-slate-100 text-slate-600 font-bold border-b border-slate-200">
+                                            <th className="p-3">إلى (الوجهة)</th>
+                                            <th className="p-3">السعر</th>
+                                            <th className="p-3 text-left">التوقيت</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100">
+                                        {reportData.orders.map((order, idx) => (
+                                            <tr key={idx} className={idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}>
+                                                <td className="p-3 font-medium text-slate-800">{order.toLocation}</td>
+                                                <td className="p-3 font-bold text-slate-900">{order.price}</td>
+                                                <td className="p-3 font-mono text-slate-500 text-left">{order.time}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                              </div>
+                          </div>
+
+                          <div className="w-1/3">
+                              <h3 className="font-bold text-slate-800 mb-2 flex items-center gap-2">
+                                  <Receipt size={18} className="text-red-500" />
+                                  المصاريف
+                              </h3>
+                              <div className="border border-slate-200 rounded-lg overflow-hidden">
+                                <table className="w-full text-right text-xs">
+                                    <thead>
+                                        <tr className="bg-slate-100 text-slate-600 font-bold border-b border-slate-200">
+                                            <th className="p-3">البيان</th>
+                                            <th className="p-3 text-left">المبلغ</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100">
+                                        {reportData.expenses && reportData.expenses.length > 0 ? (
+                                            reportData.expenses.map((expense, idx) => (
+                                                <tr key={idx} className={idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}>
+                                                    <td className="p-3 text-slate-700">{expense.title}</td>
+                                                    <td className="p-3 font-bold text-red-600 text-left">{expense.amount}</td>
+                                                </tr>
+                                            ))
+                                        ) : (
+                                            <tr>
+                                                <td colSpan={2} className="p-4 text-center text-slate-400 italic">لا توجد مصاريف</td>
+                                            </tr>
+                                        )}
+                                    </tbody>
+                                </table>
+                              </div>
+                          </div>
+                      </div>
+
+                      {/* Financial Grid for Worker Daily Report */}
+                      {reportData.financials && (
+                        <div className="mb-4">
+                            <h3 className="font-bold text-slate-800 mb-3 flex items-center gap-2">
+                                <Calculator size={18} className="text-slate-600" />
+                                الخلاصة المالية
+                            </h3>
+                            <div className="border-2 border-slate-800 text-sm shadow-sm">
+                                <div className="flex divide-x divide-x-reverse divide-slate-800">
+                                    <div className="flex-1 flex flex-col">
+                                        <div className="flex divide-x divide-x-reverse divide-slate-800 border-b border-slate-800 bg-[#92D050]">
+                                            <div className="flex-1 p-2 font-bold text-center text-black">{reportData.financials.totalDelivery}</div>
+                                            <div className="w-48 p-2 font-bold text-center text-black bg-[#82C040]">مجموع التوصيل</div>
+                                        </div>
+                                        <div className="flex divide-x divide-x-reverse divide-slate-800 border-b border-slate-800 bg-[#92D050]">
+                                            <div className="flex-1 p-2 font-bold text-center text-black">{reportData.financials.officeShare}</div>
+                                            <div className="w-48 p-2 font-bold text-center text-black bg-[#82C040]">فائدة المكتب</div>
+                                        </div>
+                                        <div className="flex divide-x divide-x-reverse divide-slate-800 bg-[#92D050] flex-1">
+                                            <div className="flex-1 p-2 font-bold text-center text-black flex items-center justify-center">{reportData.financials.workerGrossShare}</div>
+                                            <div className="w-48 p-2 font-bold text-center text-black bg-[#82C040] flex items-center justify-center">الفائدة (السائق)</div>
+                                        </div>
+                                    </div>
+                                    <div className="flex-1 flex flex-col">
+                                        <div className="flex divide-x divide-x-reverse divide-slate-800 border-b border-slate-800">
+                                            <div className="flex-1 p-2 font-bold text-center text-white bg-[#00B0F0]">{reportData.financials.openingBalance}</div>
+                                            <div className="w-48 p-2 font-bold text-center text-white bg-[#0090C0]">الرصيد الافتتاحي</div>
+                                        </div>
+                                        <div className="flex divide-x divide-x-reverse divide-slate-800 border-b border-slate-800">
+                                            <div className="flex-1 p-2 font-bold text-center text-white bg-[#00B0F0]">{reportData.financials.totalExpenses}</div>
+                                            <div className="w-48 p-2 font-bold text-center text-white bg-[#0090C0]">مجموع المصروف</div>
+                                        </div>
+                                        <div className="flex divide-x divide-x-reverse divide-slate-800 border-b border-slate-800">
+                                            <div className="flex-1 p-2 font-bold text-center text-black bg-[#FFC000]">{reportData.financials.netCashHand}</div>
+                                            <div className="w-48 p-2 font-bold text-center text-black bg-[#EFA000]">الباقي من سعر الكلي</div>
+                                        </div>
+                                        <div className="flex divide-x divide-x-reverse divide-slate-800 border-b border-slate-800">
+                                            <div className="flex-1 p-2 font-bold text-center text-black bg-[#92D050]">{reportData.financials.totalLiquidity}</div>
+                                            <div className="w-48 p-2 font-bold text-center text-black bg-[#82C040]">السعر الكلي</div>
+                                        </div>
+                                        <div className="flex divide-x divide-x-reverse divide-slate-800 border-b border-slate-800">
+                                            <div className="flex-1 p-2 font-bold text-center text-black bg-[#FFC000]">{reportData.financials.workerEquity}</div>
+                                            <div className="w-48 p-2 font-bold text-center text-black bg-[#EFA000]">السعر الكلي الصافي</div>
+                                        </div>
+                                        <div className="flex divide-x divide-x-reverse divide-slate-800">
+                                            <div className="flex-1 p-2 font-bold text-center text-black bg-[#FFFF00]">{reportData.financials.workerNetProfit}</div>
+                                            <div className="w-48 p-2 font-bold text-center text-black bg-[#E0E000]">الباقي من الفائدة</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                      )}
+                  </div>
+              )}
+
+              {/* Signature Footer */}
               <div className="mt-8 flex justify-between items-end border-t border-slate-200 pt-4">
                   <div className="text-xs text-slate-400">
                       تم استخراج هذا التقرير آلياً من نظام Speed Delivery
@@ -1579,6 +1897,7 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
            <div className="h-4 bg-slate-800 w-full mt-auto"></div>
         </div>
       )}
+      {/* --- REPORT TEMPLATE END --- */}
 
       {/* NEW: Full Screen Incoming Order Alert for Workers */}
       <AnimatePresence>
@@ -1658,6 +1977,7 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
           </div>
         </header>
 
+        {/* ... [Header Content, same as before] ... */}
         <div className="w-full bg-slate-900/80 border-b border-slate-700/50 backdrop-blur-md py-2 px-4 md:px-8 flex flex-col md:flex-row justify-center md:justify-between items-center gap-2 z-20 relative">
             <div className="flex items-center gap-4 md:gap-8 text-sm font-medium">
                  <div className="flex items-center gap-2 text-slate-300 bg-slate-800/50 px-3 py-1 rounded-lg border border-slate-700/50">
@@ -1674,16 +1994,20 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
                  </div>
             </div>
             <div className="flex items-center gap-2">
-                <div className="flex items-center gap-2 text-[10px] md:text-xs text-emerald-400 bg-emerald-500/5 px-3 py-1 rounded-full border border-emerald-500/20">
+                <div className={`flex items-center gap-2 text-[10px] md:text-xs px-3 py-1 rounded-full border ${isCloudActive ? 'text-emerald-400 bg-emerald-500/5 border-emerald-500/20' : 'text-orange-400 bg-orange-500/5 border-orange-500/20'}`}>
                     <span className="relative flex h-2 w-2">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                      <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${isCloudActive ? 'bg-emerald-400' : 'bg-orange-400'}`}></span>
+                      <span className={`relative inline-flex rounded-full h-2 w-2 ${isCloudActive ? 'bg-emerald-500' : 'bg-orange-500'}`}></span>
                     </span>
-                    <span className="font-bold">نظام مباشر</span>
+                    <span className="font-bold flex items-center gap-1">
+                       {isCloudActive ? 'متصل (Firebase)' : 'محلي (Offline)'}
+                       {isCloudActive ? <Cloud size={12}/> : <CloudOff size={12}/>}
+                    </span>
                 </div>
             </div>
         </div>
 
+        {/* ... [Worker Status Toggle Buttons, same as before] ... */}
         {role === 'worker' && liveWorker && (
            <div className="flex justify-center mt-4 px-4 relative z-20">
               <div className="bg-slate-800 p-1.5 rounded-2xl flex border border-slate-700 shadow-xl relative overflow-hidden">
@@ -1702,6 +2026,7 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
            </div>
         )}
 
+        {/* ... [Worker Wallet Quick View, same as before] ... */}
         {role === 'worker' && liveWorker && (
           <motion.div 
             initial={{ height: 0, opacity: 0 }}
@@ -1733,6 +2058,7 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
               exit={{ opacity: 0, y: -10 }}
               transition={{ duration: 0.3 }}
             >
+                {/* Fixed reference error: changed renderAdminOverview() to renderAdminPanel() */}
                 {role === 'admin' ? renderAdminPanel() : renderWorkerPanel()}
             </MotionDiv>
           </AnimatePresence>
@@ -1740,6 +2066,82 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
       </div>
 
       {/* --- MODALS --- */}
+      
+      {/* Sound Selection Modal */}
+      {isSoundModalOpen && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+           <MotionDiv 
+              initial={{ scale: 0.9, opacity: 0 }} 
+              animate={{ scale: 1, opacity: 1 }} 
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-slate-800 border border-slate-700 w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden max-h-[80vh] flex flex-col"
+           >
+              <div className="p-6 border-b border-slate-700 flex justify-between items-center">
+                  <h3 className="text-xl font-bold flex items-center gap-2 text-white">
+                      <Music size={24} className="text-blue-500" />
+                      اختيار نغمة الإشعارات
+                  </h3>
+                  <button onClick={() => { setIsSoundModalOpen(false); stopPreview(); }} className="p-2 hover:bg-slate-700 rounded-lg text-slate-400 hover:text-white transition-colors">
+                      <XCircle size={20} />
+                  </button>
+              </div>
+              
+              <div className="flex-1 overflow-y-auto p-2 custom-scrollbar">
+                  <div className="grid gap-2">
+                      {SOUND_PRESETS.map((sound) => {
+                          const isSelected = (liveWorker?.notificationSound || 'tone-1') === sound.id;
+                          const isPlaying = previewPlayingId === sound.id;
+                          
+                          return (
+                              <div 
+                                  key={sound.id} 
+                                  onClick={() => !isPlaying && handlePreviewTone(sound.id)}
+                                  className={`p-4 rounded-xl border transition-all flex items-center justify-between cursor-pointer group ${isSelected ? 'bg-blue-900/20 border-blue-500' : 'bg-slate-900/50 border-slate-700 hover:border-slate-500'}`}
+                              >
+                                  <div className="flex items-center gap-4">
+                                      <div className={`w-12 h-12 rounded-full flex items-center justify-center transition-colors ${isPlaying ? 'bg-green-500 text-white animate-pulse' : isSelected ? 'bg-blue-500 text-white' : 'bg-slate-700 text-slate-400'}`}>
+                                          {isPlaying ? <Volume2 size={24} /> : <Music size={24} />}
+                                      </div>
+                                      <div>
+                                          <p className={`font-bold ${isSelected ? 'text-blue-400' : 'text-white'}`}>{sound.name}</p>
+                                          <p className="text-xs text-slate-400">{sound.description}</p>
+                                      </div>
+                                  </div>
+                                  
+                                  <div className="flex items-center gap-2">
+                                      {isPlaying ? (
+                                          <button 
+                                              onClick={(e) => { e.stopPropagation(); stopPreview(); }}
+                                              className="p-2 bg-red-500/10 text-red-500 rounded-lg hover:bg-red-500/20 transition-colors"
+                                          >
+                                              <Square size={20} fill="currentColor" />
+                                          </button>
+                                      ) : (
+                                          <button 
+                                              onClick={(e) => { e.stopPropagation(); handlePreviewTone(sound.id); }}
+                                              className="p-2 bg-slate-700 text-slate-300 rounded-lg hover:bg-green-500 hover:text-white transition-colors"
+                                          >
+                                              <Play size={20} fill="currentColor" />
+                                          </button>
+                                      )}
+                                      
+                                      <button 
+                                          onClick={(e) => { e.stopPropagation(); selectTone(sound.id); }}
+                                          className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${isSelected ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/50' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+                                      >
+                                          {isSelected ? 'مفعل' : 'تفعيل'}
+                                      </button>
+                                  </div>
+                              </div>
+                          );
+                      })}
+                  </div>
+              </div>
+           </MotionDiv>
+        </div>
+      )}
+
+      {/* ... [Worker Modal, same as before] ... */}
       {role === 'admin' && isWorkerModalOpen && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
           <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} className="bg-slate-800 border border-slate-700 w-full max-w-md rounded-2xl p-6 shadow-2xl">
@@ -1769,6 +2171,7 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
         </div>
       )}
 
+      {/* ... [Balance Modal, same as before] ... */}
       {isBalanceModalOpen && editingWorker && (
          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
            <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} className="bg-slate-800 border border-emerald-500/30 w-full max-w-sm rounded-2xl p-6 shadow-2xl">
@@ -1790,6 +2193,7 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
          </div>
       )}
 
+      {/* ... [Expense Modal, same as before] ... */}
       {isExpenseModalOpen && (
          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
            <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} className="bg-slate-800 border border-red-500/30 w-full max-w-sm rounded-2xl p-6 shadow-2xl">
@@ -1815,6 +2219,7 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
          </div>
       )}
 
+      {/* ... [Delete Modal, same as before] ... */}
       {deleteConfirmation.isOpen && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
            <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-slate-800 border border-red-500/30 w-full max-w-sm rounded-2xl p-6 shadow-2xl shadow-red-900/20 text-center">
@@ -1832,6 +2237,7 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
         </div>
       )}
 
+      {/* ... [Order Modal, same as before] ... */}
       {isOrderModalOpen && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
            <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} className="bg-slate-800 border border-slate-700 w-full max-w-lg rounded-2xl p-6 shadow-2xl">

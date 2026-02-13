@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ViewState, Worker } from './types';
 import SplashScreen from './views/SplashScreen';
 import RoleSelection from './views/RoleSelection';
@@ -13,23 +13,62 @@ import { motion } from 'framer-motion';
 // Fix for TS errors where motion props are not recognized
 const MotionDiv = motion.div as any;
 
+const SESSION_KEY = 'speed_delivery_session';
+
 const App: React.FC = () => {
-  const [currentView, setCurrentView] = useState<ViewState>('splash');
-  const [currentUser, setCurrentUser] = useState<Worker | null>(null);
+  // Initialize state with lazy loading from localStorage
+  const [currentView, setCurrentView] = useState<ViewState>(() => {
+    try {
+      const savedSession = localStorage.getItem(SESSION_KEY);
+      if (savedSession) {
+        const { role } = JSON.parse(savedSession);
+        // If session exists, skip splash and go directly to dashboard
+        return role === 'admin' ? 'dashboard-admin' : 'dashboard-worker';
+      }
+    } catch (e) {
+      console.error("Failed to parse session", e);
+      localStorage.removeItem(SESSION_KEY);
+    }
+    return 'splash';
+  });
+
+  const [currentUser, setCurrentUser] = useState<Worker | null>(() => {
+    try {
+      const savedSession = localStorage.getItem(SESSION_KEY);
+      if (savedSession) {
+        const { user } = JSON.parse(savedSession);
+        return user || null;
+      }
+    } catch (e) {
+      return null;
+    }
+    return null;
+  });
 
   // Handle Splash Complete
   const handleSplashComplete = () => {
-    setCurrentView('landing');
+    // Only go to landing if we are still in splash (haven't restored a session)
+    if (currentView === 'splash') {
+      setCurrentView('landing');
+    }
   };
 
   const handleLoginSuccess = (view: ViewState, workerData?: Worker) => {
-    if (workerData) {
-      setCurrentUser(workerData);
+    const role = view === 'dashboard-admin' ? 'admin' : 'worker';
+    const user = workerData || null;
+    
+    // Save session
+    localStorage.setItem(SESSION_KEY, JSON.stringify({ role, user }));
+    
+    if (user) {
+      setCurrentUser(user);
     }
     setCurrentView(view);
   };
 
   const handleLogout = () => {
+    // Clear session
+    localStorage.removeItem(SESSION_KEY);
     setCurrentUser(null);
     setCurrentView('landing');
   };

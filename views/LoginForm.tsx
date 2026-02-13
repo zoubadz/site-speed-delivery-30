@@ -1,10 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Phone, Lock, ArrowRight, Loader2, AlertTriangle, ShieldAlert, User } from 'lucide-react';
 import Button from '../components/Button';
 import Logo from '../components/Logo';
 import { ViewState, Worker, Admin } from '../types';
-import { INITIAL_WORKERS, INITIAL_ADMINS } from '../constants';
+import { DB } from '../services/db';
 
 interface LoginFormProps {
   role: 'admin' | 'worker';
@@ -12,26 +12,44 @@ interface LoginFormProps {
   onLoginSuccess: (view: ViewState, workerData?: Worker) => void;
 }
 
-// Fix for TS errors where motion props are not recognized
 const MotionDiv = motion.div as any;
 
 const LoginForm: React.FC<LoginFormProps> = ({ role, onBack, onLoginSuccess }) => {
   const [loading, setLoading] = useState(false);
-  const [identifier, setIdentifier] = useState(''); // Phone for worker, Username for admin
+  const [identifier, setIdentifier] = useState(''); 
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [attempts, setAttempts] = useState(0);
   const [isLocked, setIsLocked] = useState(false);
 
+  // Data state for validation
+  const [admins, setAdmins] = useState<Admin[]>([]);
+  const [workers, setWorkers] = useState<Worker[]>([]);
+
+  // Subscribe to data for auth verification
+  useEffect(() => {
+    let unsubAdmins: any;
+    let unsubWorkers: any;
+
+    if (role === 'admin') {
+      unsubAdmins = DB.subscribeToAdmins(setAdmins);
+    } else {
+      unsubWorkers = DB.subscribeToWorkers(setWorkers);
+    }
+
+    return () => {
+      if (unsubAdmins && typeof unsubAdmins === 'function') unsubAdmins();
+      if (unsubWorkers && typeof unsubWorkers === 'function') unsubWorkers();
+    };
+  }, [role]);
+
   const isWorker = role === 'worker';
-  const accentColor = isWorker ? 'text-blue-500' : 'text-red-500';
   const focusRing = isWorker ? 'focus:ring-blue-500' : 'focus:ring-red-500';
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
-    // Security: Check Rate Limiting
     if (isLocked) {
       setError('تم إيقاف الدخول مؤقتاً بسبب تكرار المحاولات الخاطئة.');
       return;
@@ -44,33 +62,18 @@ const LoginForm: React.FC<LoginFormProps> = ({ role, onBack, onLoginSuccess }) =
         setIsLocked(false);
         setAttempts(0);
         setError(null);
-      }, 30000); // 30 seconds lockout
+      }, 30000); 
       return;
     }
 
     setLoading(true);
 
-    // Simulate Network Latency
     setTimeout(() => {
       setLoading(false);
 
       if (role === 'admin') {
-        // --- ADMIN LOGIN LOGIC (Dynamic) ---
-        let currentAdmins: Admin[] = INITIAL_ADMINS;
-        const storedAdmins = localStorage.getItem('speed_delivery_admins');
-        
-        if (storedAdmins) {
-            try {
-                currentAdmins = JSON.parse(storedAdmins);
-            } catch (e) {
-                console.error("Error parsing admins", e);
-            }
-        } else {
-            // Initialize storage if empty
-            localStorage.setItem('speed_delivery_admins', JSON.stringify(INITIAL_ADMINS));
-        }
-
-        const admin = currentAdmins.find(a => a.username === identifier.trim() && a.password === password);
+        const cleanIdentifier = identifier.trim();
+        const admin = admins.find(a => a.username === cleanIdentifier && a.password === password);
 
         if (admin) {
           onLoginSuccess('dashboard-admin');
@@ -79,32 +82,16 @@ const LoginForm: React.FC<LoginFormProps> = ({ role, onBack, onLoginSuccess }) =
           setError('بيانات الدخول غير صحيحة');
         }
       } else {
-        // --- WORKER LOGIN LOGIC ---
-        // 1. Fetch latest workers from LocalStorage
-        let currentWorkers: Worker[] = INITIAL_WORKERS;
-        const storedWorkers = localStorage.getItem('speed_delivery_workers');
-        if (storedWorkers) {
-           try {
-             currentWorkers = JSON.parse(storedWorkers);
-           } catch (e) {
-             console.error("Failed to parse workers", e);
-           }
-        }
-
-        // 2. Find worker by phone
-        const worker = currentWorkers.find(w => w.phone === identifier.trim());
+        const cleanPhone = identifier.trim();
+        const worker = workers.find(w => w.phone === cleanPhone);
         
-        // 3. Check Password & Status
         if (worker && worker.password === password) {
           if (worker.status === 'active') {
-             // Success - Pass worker data
              onLoginSuccess('dashboard-worker', worker);
           } else {
-             // Account Suspended
              setError('تم إيقاف هذا الحساب. يرجى مراجعة الإدارة.');
           }
         } else {
-          // 4. Failed Login
           setAttempts(prev => prev + 1);
           setError('رقم الهاتف أو كلمة المرور غير صحيحة');
         }
@@ -114,7 +101,6 @@ const LoginForm: React.FC<LoginFormProps> = ({ role, onBack, onLoginSuccess }) =
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden">
-        {/* Background blobs */}
         <div className={`absolute top-0 right-0 w-[500px] h-[500px] ${isWorker ? 'bg-blue-600' : 'bg-red-600'} rounded-full blur-[150px] opacity-10 transform translate-x-1/2 -translate-y-1/2`}></div>
         
         <button 
@@ -165,7 +151,6 @@ const LoginForm: React.FC<LoginFormProps> = ({ role, onBack, onLoginSuccess }) =
                   onChange={(e) => {
                     let val = e.target.value;
                     if (isWorker) {
-                      // Restrict to numbers only and max 10 digits
                       val = val.replace(/\D/g, '').slice(0, 10);
                     }
                     setIdentifier(val);

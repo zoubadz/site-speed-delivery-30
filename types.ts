@@ -40,6 +40,7 @@ export interface Worker {
   openingBalance: number; // Added opening balance field
   lastLogin?: string;
   avatar?: string;
+  notificationSound?: string; // Added notification sound ID
 }
 
 export interface Order {
