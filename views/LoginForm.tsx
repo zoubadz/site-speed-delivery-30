@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Phone, Lock, ArrowRight, Loader2, AlertTriangle, ShieldAlert, User } from 'lucide-react';
@@ -86,11 +87,9 @@ const LoginForm: React.FC<LoginFormProps> = ({ role, onBack, onLoginSuccess }) =
         const worker = workers.find(w => w.phone === cleanPhone);
         
         if (worker && worker.password === password) {
-          if (worker.status === 'active') {
-             onLoginSuccess('dashboard-worker', worker);
-          } else {
-             setError('تم إيقاف هذا الحساب. يرجى مراجعة الإدارة.');
-          }
+          // تم إزالة القيد الذي يمنع السائق من الدخول إذا كانت حالته "غير متاح"
+          // هذا يسمح له بالدخول وتغيير حالته إلى "متاح" مرة أخرى بعد تسجيل الخروج
+          onLoginSuccess('dashboard-worker', worker);
         } else {
           setAttempts(prev => prev + 1);
           setError('رقم الهاتف أو كلمة المرور غير صحيحة');

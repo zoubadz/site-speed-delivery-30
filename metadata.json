@@ -1,5 +1,7 @@
 {
-  "name": "Cyt Speed Delivery Ouargla ",
+  "name": "sppeed1",
   "description": "Professional delivery management system for Speed Delivery Ouargla. Features admin and worker dashboards with a modern, responsive design and dynamic animations.",
-  "requestFramePermissions": []
+  "requestFramePermissions": [
+    "geolocation"
+  ]
 }

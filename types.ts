@@ -1,3 +1,5 @@
+
+
 export type UserRole = 'admin' | 'worker' | null;
 
 export type ViewState = 
@@ -8,7 +10,7 @@ export type ViewState =
   | 'login-worker'
   | 'dashboard-admin'
   | 'dashboard-worker'
-  | 'developer-dashboard'; // Added developer view
+  | 'developer-dashboard';
 
 export interface NavItem {
   id: string;
@@ -37,10 +39,15 @@ export interface Worker {
   status: 'active' | 'suspended';
   ordersCompleted: number;
   totalEarnings: number;
-  openingBalance: number; // Added opening balance field
+  openingBalance: number;
   lastLogin?: string;
   avatar?: string;
-  notificationSound?: string; // Added notification sound ID
+  notificationSound?: string; // 'tone-1', 'tone-2', ... or 'custom'
+  customRingTone?: string; // Base64 Data URL for custom audio
+  // GPS Tracking Fields
+  latitude?: number;
+  longitude?: number;
+  lastLocationUpdate?: string; // Timestamp
 }
 
 export interface Order {
@@ -48,22 +55,38 @@ export interface Order {
   fromLocation: string;
   toLocation: string;
   price: number;
-  customerPhone: string;
+  customerPhone: string; // Sender/Pickup Phone
+  deliveryPhone?: string; // Receiver/Dropoff Phone
   workerId: string | null; 
   workerName?: string;
   status: 'pending' | 'accepted' | 'delivered' | 'cancelled';
   date: string;
-  time: string;
-  description?: string; // Added description field
+  time: string; // Order Creation Time
+  acceptedTime?: string; // Time when worker accepted
+  deliveredTime?: string; // Time when delivered
+  cancelledTime?: string; // Time when cancelled
+  description?: string;
+}
+
+export interface OrderChangeRequest {
+  id: string;
+  orderId: string;
+  workerId: string;
+  workerName: string;
+  newValues: Partial<Order>;
+  timestamp: string;
 }
 
 export interface Notification {
   id: string;
-  workerName: string;
-  action: string; // e.g., "Accepted Order", "Delivered Order"
+  workerId?: string; // Target worker
+  workerName?: string; // For admin logs
+  action: string; 
   orderId: string;
   time: string;
-  type: 'info' | 'success' | 'warning';
+  type: 'info' | 'success' | 'warning' | 'admin_edit';
+  isRead?: boolean;
+  changes?: string[]; // Array of change descriptions
 }
 
 export interface Expense {

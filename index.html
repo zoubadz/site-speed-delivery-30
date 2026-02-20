@@ -1,9 +1,23 @@
+
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Updated Viewport for iOS Notch Support -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>Speed Delivery Ouargla</title>
+    
+    <!-- PWA Meta Tags -->
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="SpeedDel" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/2830/2830305.png" />
+
+    <!-- Leaflet Map CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -11,7 +25,21 @@
     <style>
       body {
         font-family: 'Cairo', sans-serif;
+        /* iOS Specific Optimizations */
+        -webkit-tap-highlight-color: transparent; /* Remove tap highlight color */
+        -webkit-touch-callout: none; /* Disable long-press menu (magnifier) */
+        -webkit-user-select: none; /* Disable text selection */
+        user-select: none;
+        overscroll-behavior-y: none; /* Disable rubber-band scrolling effect */
+        background-color: #0f172a; /* Match theme color for overscroll areas */
       }
+      
+      /* Ensure inputs are still selectable */
+      input, textarea {
+        -webkit-user-select: text;
+        user-select: text;
+      }
+
       /* Custom scrollbar for webkit */
       ::-webkit-scrollbar {
         width: 8px;
@@ -22,6 +50,32 @@
       ::-webkit-scrollbar-thumb {
         background: #dc2626; 
         border-radius: 4px;
+      }
+
+      /* Map Marker Animations */
+      @keyframes pulse-ring {
+        0% { transform: scale(0.33); opacity: 0; }
+        50% { opacity: 0.5; }
+        100% { transform: scale(1.5); opacity: 0; }
+      }
+      
+      .marker-pulse::before {
+        content: '';
+        position: absolute;
+        left: 0; top: 0; right: 0; bottom: 0;
+        border-radius: 50%;
+        border: 2px solid currentColor;
+        animation: pulse-ring 2s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+      }
+
+      .leaflet-container {
+        font-family: 'Cairo', sans-serif !important;
+        background-color: #0f172a !important;
+      }
+      
+      .custom-div-icon {
+        background: transparent !important;
+        border: none !important;
       }
     </style>
   <script type="importmap">
@@ -34,6 +88,7 @@
     "react-dom/": "https://esm.sh/react-dom@^19.2.4/",
     "jspdf": "https://esm.sh/jspdf@2.5.1",
     "html2canvas": "https://esm.sh/html2canvas@1.4.1",
+    "leaflet": "https://esm.sh/leaflet@1.9.4",
     "firebase/app": "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js",
     "firebase/database": "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js",
     "firebase/": "https://esm.sh/firebase@^12.9.0/"
@@ -41,7 +96,8 @@
 }
 </script>
 </head>
-  <body class="bg-slate-900 text-white overflow-x-hidden">
+  <body class="bg-slate-900 text-white overflow-x-hidden select-none">
     <div id="root"></div>
   </body>
 </html>
+    
