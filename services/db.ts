@@ -1,9 +1,8 @@
 
-
-import { db } from '../firebaseConfig';
+import { db } from '@/firebaseConfig';
 import { ref, onValue, set, push, update, remove, get, child } from 'firebase/database';
-import { Order, Worker, Admin, Expense, OrderChangeRequest, Notification } from '../types';
-import { INITIAL_WORKERS, INITIAL_ADMINS } from '../constants';
+import { Order, Worker, Admin, Expense, OrderChangeRequest, Notification } from '@/types';
+import { INITIAL_WORKERS, INITIAL_ADMINS } from '@/constants';
 
 // Flag to check if we are using Cloud DB
 export const isCloudActive = !!db;
@@ -82,6 +81,14 @@ export const DB = {
             const filtered = current.filter((o: Order) => o.id !== id);
             return mockSave('speed_delivery_orders', filtered);
         }
+    },
+
+    // --- FCM TOKENS ---
+    saveFCMToken: (userId: string, token: string, role: 'admin' | 'worker') => {
+        if (isCloudActive) {
+            return set(ref(db, `fcm_tokens/${role}_${userId}`), { token, updatedAt: new Date().toISOString() });
+        }
+        return Promise.resolve();
     },
 
     // --- CHANGE REQUESTS (Worker Edits) ---

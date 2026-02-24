@@ -4,8 +4,8 @@ import { motion } from 'framer-motion';
 import { Phone, Lock, ArrowRight, Loader2, AlertTriangle, ShieldAlert, User } from 'lucide-react';
 import Button from '../components/Button';
 import Logo from '../components/Logo';
-import { ViewState, Worker, Admin } from '../types';
-import { DB } from '../services/db';
+import { ViewState, Worker, Admin } from '@/types';
+import { DB } from '@/services/db';
 
 interface LoginFormProps {
   role: 'admin' | 'worker';

@@ -1,9 +1,10 @@
+
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Lock, ArrowRight, Shield, Plus, Trash2, Key, Code, AlertTriangle, Loader2 } from 'lucide-react';
-import Button from '../components/Button';
-import { Admin } from '../types';
-import { DB, isCloudActive } from '../services/db';
+import Button from '@/components/Button';
+import { Admin } from '@/types';
+import { DB, isCloudActive } from '@/services/db';
 
 interface DeveloperDashboardProps {
   onBack: () => void;

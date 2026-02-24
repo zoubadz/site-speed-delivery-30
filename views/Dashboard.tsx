@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   LogOut, Bell, Search, LayoutDashboard, Users, Package, 
@@ -13,16 +12,17 @@ import {
   CheckCheck, ArrowDown, Database, RotateCcw, Upload, AlertOctagon, Map as MapIcon, Star, MessageCircle,
   ChevronDown, ChevronUp, ChevronLeft, ChevronRight as ChevronRightIcon, X, Smartphone, MessageSquare,
   FileEdit, GitPullRequest, ArrowRightLeft, Info, Mic, Layers, Locate, Sun, Moon,
-  Zap, ArrowLeft // Added ArrowLeft for the new design
+  Zap, ArrowLeft, Disc, Pause
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
-import { ViewState, DashboardStat, Worker, Order, Notification as AppNotification, Expense, OrderChangeRequest } from '../types';
-import Logo from '../components/Logo';
-import { MOCK_STATS_ADMIN, MOCK_STATS_WORKER, INITIAL_WORKERS, INITIAL_ORDERS } from '../constants';
-import Button from '../components/Button';
+import { ViewState, DashboardStat, Worker, Order, Notification as AppNotification, Expense, OrderChangeRequest } from '@/types';
+import Logo from '@/components/Logo';
+import { MOCK_STATS_ADMIN, MOCK_STATS_WORKER, INITIAL_WORKERS, INITIAL_ORDERS } from '@/constants';
+import Button from '@/components/Button';
 import { motion, AnimatePresence } from 'framer-motion';
-import { DB, isCloudActive } from '../services/db';
+import { DB, isCloudActive } from '@/services/db';
+import { messaging, getToken, onMessage } from '@/firebaseConfig';
 import L from 'leaflet';
 
 // Fix for TS errors
@@ -687,6 +687,50 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
         if(unsubNotifications) (unsubNotifications as any)();
     };
   }, [role, currentUser]);
+
+  // FCM Push Notifications Setup
+  useEffect(() => {
+    if (!currentUser || !messaging || !isCloudActive) return;
+
+    const requestNotificationPermission = async () => {
+      try {
+        const permission = await Notification.requestPermission();
+        if (permission === 'granted') {
+          // Get FCM token
+          // Note: In a real app, you need a VAPID key from Firebase Console -> Project Settings -> Cloud Messaging -> Web configuration
+          // For this demo, we'll try to get it without a specific vapidKey if it's not strictly required, or you can add it later.
+          const currentToken = await getToken(messaging, { 
+            // vapidKey: "YOUR_PUBLIC_VAPID_KEY_HERE" 
+          });
+          
+          if (currentToken) {
+            console.log('FCM Token generated successfully.');
+            // Save token to database
+            DB.saveFCMToken(currentUser.id, currentToken, role);
+          } else {
+            console.log('No registration token available. Request permission to generate one.');
+          }
+        } else {
+          console.log('Notification permission denied.');
+        }
+      } catch (error) {
+        console.error('An error occurred while retrieving token. ', error);
+      }
+    };
+
+    requestNotificationPermission();
+
+    // Handle foreground messages
+    const unsubscribe = onMessage(messaging, (payload) => {
+      console.log('Message received. ', payload);
+      // You can customize the foreground notification here if needed,
+      // or just let the existing logic handle new orders.
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [currentUser, role]);
   
   // GPS Tracking & Wake Lock Logic
   useEffect(() => {
@@ -694,13 +738,15 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
         try {
           if ('wakeLock' in navigator) {
             wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
-            // console.log('Wake Lock is active');
             wakeLockRef.current.addEventListener('release', () => {
               // console.log('Wake Lock released');
             });
           }
-        } catch (err) {
-          console.error(`${err} - Wake Lock error`);
+        } catch (err: any) {
+          // Ignore NotAllowedError which happens in iframes/environments without permission
+          if (err.name !== 'NotAllowedError') {
+            console.error(`${err} - Wake Lock error`);
+          }
         }
       };
 
@@ -775,6 +821,7 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
   
   // State for storing uploaded audio preview before saving
   const [pendingCustomAudio, setPendingCustomAudio] = useState<string | null>(null);
+  const [pendingCustomAudioName, setPendingCustomAudioName] = useState<string | null>(null);
 
   useEffect(() => {
     if (role === 'worker' && "Notification" in window) {
@@ -785,31 +832,41 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
   }, [role]);
 
   // Handle uploaded audio playback
-  const playCustomAudio = (base64Data: string) => {
+  const playCustomAudio = (base64Data: string, isLooping: boolean = false) => {
     if (customAudioRef.current) {
         customAudioRef.current.pause();
         customAudioRef.current.src = "";
     }
     const audio = new Audio(base64Data);
-    customAudioRef.current = audio;
-    audio.play().catch(e => console.error("Custom Audio Play Error:", e));
+    audio.volume = 1.0; 
+    audio.loop = isLooping; 
     
-    // Auto stop after 30 seconds if it's too long (full song support)
-    setTimeout(() => {
-        if (!audio.paused) {
-             audio.pause();
-             audio.currentTime = 0;
-        }
-    }, 30000); 
+    customAudioRef.current = audio;
+    
+    // Add event listener to clear playing state when audio finishes (only if not looping)
+    if (!isLooping) {
+        audio.addEventListener('ended', () => {
+            setPreviewPlayingId(null);
+        });
+    }
+
+    audio.play().catch(e => console.error("Custom Audio Play Error:", e));
   };
 
-  const playToneById = (soundId: string, duration: number = 5) => {
+  const playToneById = (soundId: string, duration: number = 5, isLooping: boolean = false) => {
       // 1. Check for Custom Sound
       if (soundId === 'custom') {
-          // Priority: Pending Preview > Saved Custom Tone
-          const toneToPlay = pendingCustomAudio || currentUser?.customRingTone;
+          // Priority: Pending Preview > Saved Custom Tone (Fetched from live workers state for accuracy)
+          let activeWorkerCustomTone = null;
+          if (currentUser) {
+             const activeWorker = workers.find(w => w.id === currentUser.id);
+             activeWorkerCustomTone = activeWorker?.customRingTone;
+          }
+
+          const toneToPlay = pendingCustomAudio || activeWorkerCustomTone || currentUser?.customRingTone;
+          
           if (toneToPlay) {
-              playCustomAudio(toneToPlay);
+              playCustomAudio(toneToPlay, isLooping);
               return;
           }
       }
@@ -958,10 +1015,10 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
       }
   };
 
-  const playNotificationSound = (soundId?: string) => {
+  const playNotificationSound = (soundId?: string, isLooping: boolean = false) => {
     // Just play once because our tones are now ~5s long and complex
     const effectiveSound = soundId || 'tone-1';
-    playToneById(effectiveSound);
+    playToneById(effectiveSound, 5, isLooping);
   };
   
   // NEW: Stop Sound Function
@@ -977,6 +1034,9 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
         try { oscillatorRef.current.stop(); } catch(e){}
         oscillatorRef.current = null;
     }
+    
+    // Reset Playing State
+    setPreviewPlayingId(null);
   };
 
   const showSystemNotification = (order: Order) => {
@@ -1034,10 +1094,10 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
             if (newOrder) {
                 setIncomingOrder(newOrder);
                 const workerProfile = workers.find(w => w.id === currentUser.id);
-                // Play the 5-second complex tone
-                playNotificationSound(workerProfile?.notificationSound || 'tone-1');
+                // Play the tone with Loop enabled for alerts
+                playNotificationSound(workerProfile?.notificationSound || 'tone-1', true);
                 showSystemNotification(newOrder);
-                if (navigator.vibrate) navigator.vibrate([500, 200, 500, 200, 1000]); 
+                if (navigator.vibrate) navigator.vibrate([500, 200, 500, 200, 1000, 200, 500]); 
             }
         }
     }
@@ -1679,13 +1739,16 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
       stopPreview();
       
       setPreviewPlayingId(id);
-      playToneById(id);
+      // Play tone without loop for preview
+      playToneById(id, 5, false);
       
-      // Automatically clear playing state after ~5.5s
-      const timer = setTimeout(() => {
-          setPreviewPlayingId(null);
-      }, 5500);
-      setPreviewInterval(timer);
+      if (id !== 'custom') {
+          // Only clear synthetic tones automatically, let songs play
+          const timer = setTimeout(() => {
+              setPreviewPlayingId(null);
+          }, 5500);
+          setPreviewInterval(timer);
+      }
   };
 
   const stopPreview = () => {
@@ -1708,7 +1771,7 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
       
       // If the user tries to activate 'custom' but hasn't uploaded anything or saved anything, show alert
       if (id === 'custom' && !currentUser.customRingTone && !pendingCustomAudio) {
-           alert("يرجى رفع نغمة خاصة أولاً.");
+           alert("يرجى رفع ملف صوتي أولاً.");
            return;
       }
       
@@ -1721,8 +1784,8 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
       const file = e.target.files?.[0];
       if (!file) return;
 
-      if (file.size > 5 * 1024 * 1024) { // Increased to 5MB limit
-          alert('حجم الملف كبير جداً. يرجى اختيار ملف صوتي أصغر من 5 ميغابايت.');
+      if (file.size > 15 * 1024 * 1024) { // Increased to 15MB limit for full songs
+          alert('حجم الملف كبير جداً. يرجى اختيار ملف صوتي أصغر من 15 ميغابايت.');
           return;
       }
 
@@ -1737,22 +1800,16 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
           
           // DO NOT SAVE TO DB YET. Just set pending state and play it.
           setPendingCustomAudio(base64);
+          setPendingCustomAudioName(file.name);
           
           // Stop any playing sound
           stopPreview();
           
-          // Play the new uploaded sound immediately so user can hear it
-          playCustomAudio(base64);
+          // Play the new uploaded sound immediately so user can hear it (no loop for preview)
+          playCustomAudio(base64, false);
           
           // Mark 'custom' as playing for UI feedback
           setPreviewPlayingId('custom');
-          
-          // Clear prev interval if any
-          if (previewInterval) clearTimeout(previewInterval);
-           const timer = setTimeout(() => {
-              setPreviewPlayingId(null);
-          }, 30000); // Allow longer preview for upload
-          setPreviewInterval(timer);
       };
       reader.readAsDataURL(file);
       e.target.value = ''; // Reset input
@@ -1764,18 +1821,21 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
       const updatedWorker = {
           ...currentUser,
           customRingTone: pendingCustomAudio,
+          customRingToneName: pendingCustomAudioName || 'ملف صوتي مخصص',
           notificationSound: 'custom' // Auto select custom tone
       };
       
       DB.saveWorker(updatedWorker);
       setPendingCustomAudio(null);
+      setPendingCustomAudioName(null);
       stopPreview();
-      alert('تم حفظ النغمة وتفعيلها بنجاح!');
+      alert('تم حفظ الأغنية وتفعيلها بنجاح!');
       setIsSoundModalOpen(false);
   };
   
   const handleCancelCustomTone = () => {
       setPendingCustomAudio(null);
+      setPendingCustomAudioName(null);
       stopPreview();
   };
 
@@ -2220,7 +2280,7 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
                            <p className={`font-bold ${isDarkMode ? 'text-white' : 'text-slate-800'}`}>نغمة التنبيه</p>
                            <p className="text-xs text-slate-400 mt-1">
                                {myProfile.notificationSound === 'custom' 
-                                   ? 'نغمة مخصصة (تم الرفع)' 
+                                   ? (myProfile.customRingToneName || 'ملف صوتي مخصص')
                                    : SOUND_PRESETS.find(s => s.id === (myProfile.notificationSound || 'tone-1'))?.name || 'الافتراضي'}
                            </p>
                        </div>
@@ -2735,7 +2795,7 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
          </h3>
 
          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div onClick={prepareGlobalReport} className={`cursor-pointer p-6 rounded-2xl border transition-all group text-center ${isDarkMode ? 'bg-slate-800 border-slate-700 hover:border-green-500' : 'bg-white border-slate-200 shadow-xl hover:border-green-500 hover:shadow-2xl'}`}>
+            <div onClick={prepareGlobalReport} className={`cursor-pointer p-6 rounded-2xl border transition-all group text-center ${isDarkMode ? 'bg-slate-800 border-slate-700 hover:border-green-500' : 'bg-white border-slate-200 shadow-xl hover:border-green-500 hover:border-green-500 hover:shadow-2xl'}`}>
                <div className="w-16 h-16 bg-green-500/10 rounded-full flex items-center justify-center mx-auto mb-4 text-green-500 group-hover:scale-110 transition-transform">
                   <BarChart3 size={32} />
                </div>
@@ -2903,6 +2963,7 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
 
             {(reportData.type === 'worker-daily' || reportData.type === 'worker-admin') && (
                 <div className="flex-1 flex flex-col gap-6">
+                    {/* Order Details Table - Common for both */}
                     <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
                         <div className="bg-slate-100 px-6 py-4 border-b border-slate-200 flex items-center gap-2">
                             <ClipboardList size={20} className="text-slate-500" />
@@ -2931,14 +2992,10 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
                                     </tr>
                                 ))}
                             </tbody>
-                            <tfoot className="bg-slate-900 text-white">
+                            <tfoot className="bg-slate-50 border-t-2 border-slate-200">
                                 <tr>
-                                    <td colSpan={4} className="px-6 py-4 font-bold text-left pl-8">المجموع الكلي للطلبيات:</td>
-                                    <td className="px-6 py-4 font-black text-lg">{reportData.financials?.totalDelivery.toLocaleString()} DA</td>
-                                </tr>
-                                <tr className="bg-green-600 text-white">
-                                    <td colSpan={4} className="px-6 py-4 font-bold text-left pl-8">أرباح اليوم (2/3):</td>
-                                    <td className="px-6 py-4 font-black text-lg">{reportData.financials?.workerGrossShare.toLocaleString()} DA</td>
+                                    <td colSpan={4} className="px-6 py-4 font-bold text-left pl-8 text-slate-600">المجموع الكلي:</td>
+                                    <td className="px-6 py-4 font-black text-xl text-slate-900">{reportData.financials?.totalDelivery.toLocaleString()} DA</td>
                                 </tr>
                             </tfoot>
                         </table>
@@ -2977,59 +3034,128 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
                         </div>
                     )}
 
-                     <div className="break-inside-avoid">
-                        <h3 className="font-bold text-lg mb-2 flex items-center gap-2">
-                           <Wallet size={20} className="text-blue-600" />
-                           الخلاصة المالية (المحفظة)
-                        </h3>
-                        <div className="border-2 border-slate-900 rounded-xl overflow-hidden text-sm">
-                            <div className="bg-slate-900 text-white p-3 flex justify-between items-center">
-                                <span className="font-bold">الرصيد الافتتاحي (بداية اليوم)</span>
-                                <span className="font-black text-xl">{reportData.financials?.openingBalance.toLocaleString()} DA</span>
-                            </div>
-                            
-                            <div className="grid grid-cols-2 divide-x divide-x-reverse divide-slate-200 border-b border-slate-200 bg-white">
-                                <div>
-                                    <div className="flex justify-between p-3 border-b border-slate-100">
-                                        <span className="text-slate-600">مجموع التوصيل</span>
-                                        <span className="font-bold">{reportData.financials?.totalDelivery.toLocaleString()}</span>
-                                    </div>
-                                    <div className="flex justify-between p-3 border-b border-slate-100 bg-slate-50">
-                                        <span className="text-slate-600">فائدة المكتب (1/3)</span>
-                                        <span className="font-bold text-blue-600">{reportData.financials?.officeShare.toLocaleString()}</span>
-                                    </div>
-                                    <div className="flex justify-between p-3 bg-green-50">
-                                        <span className="text-green-700 font-bold">الفائدة (2/3)</span>
-                                        <span className="font-bold text-green-700">{reportData.financials?.workerGrossShare.toLocaleString()}</span>
-                                    </div>
-                                </div>
-                                
-                                <div>
-                                     <div className="flex justify-between p-3 border-b border-slate-100">
-                                        <span className="text-slate-600">مجموع المصروف</span>
-                                        <span className="font-bold text-red-500">-{reportData.financials?.totalExpenses.toLocaleString()}</span>
-                                    </div>
-                                    <div className="flex justify-between p-3 border-b border-slate-100 bg-yellow-50">
-                                        <span className="text-yellow-700 font-bold">الباقي من سعر الكلي (كاش)</span>
-                                        <span className="font-bold text-yellow-700">{reportData.financials?.netCashHand.toLocaleString()}</span>
-                                    </div>
-                                    <div className="flex justify-between p-3 bg-slate-100">
-                                        <span className="font-bold text-slate-800">السعر الكلي (Liquidity)</span>
-                                        <span className="font-bold text-slate-800">{reportData.financials?.totalLiquidity.toLocaleString()}</span>
-                                    </div>
-                                </div>
-                            </div>
+                    {/* --- ADMIN REPORT SPECIFIC SECTION --- */}
+                    {reportData.type === 'worker-admin' && (
+                         <div className="break-inside-avoid mt-2">
+                             <div className="flex items-center gap-3 mb-6 border-b border-slate-200 pb-2">
+                                 <PieChart className="text-blue-600" size={28} />
+                                 <h3 className="text-2xl font-black text-slate-800">ملخص توزيع الأرباح</h3>
+                             </div>
 
-                            <div className="bg-yellow-100 p-3 flex justify-between items-center border-b border-yellow-200 text-yellow-900">
-                                <span className="font-bold">السعر الكلي الصافي (الرصيد النهائي)</span>
-                                <span className="font-black text-lg">{reportData.financials?.workerEquity.toLocaleString()} DA</span>
-                            </div>
-                            <div className="bg-green-100 p-3 flex justify-between items-center text-green-900">
-                                <span className="font-bold">صافي الربح الحقيقي (بعد المصاريف)</span>
-                                <span className="font-black text-lg">{reportData.financials?.workerNetProfit.toLocaleString()} DA</span>
-                            </div>
-                        </div>
-                    </div>
+                             <div className="grid grid-cols-1 gap-6">
+                                 {/* 1. Worker Share Card (2/3) */}
+                                 <div className="bg-emerald-50 rounded-3xl p-8 border-2 border-emerald-100 flex items-center justify-between relative overflow-hidden">
+                                     <div className="absolute right-0 top-0 w-32 h-32 bg-emerald-500/10 rounded-full blur-3xl -mr-10 -mt-10"></div>
+                                     <div className="relative z-10 flex items-center gap-6">
+                                         <div className="w-20 h-20 bg-white rounded-2xl flex items-center justify-center text-emerald-600 shadow-md border border-emerald-100">
+                                             <UserCheck size={40} strokeWidth={2} />
+                                         </div>
+                                         <div>
+                                             <h4 className="text-emerald-900 font-black text-xl">أرباح العامل</h4>
+                                             <div className="inline-flex items-center gap-1 bg-emerald-200/50 text-emerald-800 px-3 py-1 rounded-full text-xs font-bold mt-2">
+                                                 <span>حصة 2/3</span>
+                                             </div>
+                                         </div>
+                                     </div>
+                                     <div className="text-right relative z-10">
+                                         <p className="text-5xl font-black text-emerald-600 tracking-tight">{reportData.financials?.workerGrossShare.toLocaleString()}</p>
+                                         <p className="text-emerald-800 font-bold mt-1">دينار جزائري (DA)</p>
+                                     </div>
+                                 </div>
+
+                                 {/* 2. Office Share Card (1/3) */}
+                                 <div className="bg-blue-50 rounded-3xl p-8 border-2 border-blue-100 flex items-center justify-between relative overflow-hidden">
+                                     <div className="absolute right-0 top-0 w-32 h-32 bg-blue-500/10 rounded-full blur-3xl -mr-10 -mt-10"></div>
+                                     <div className="relative z-10 flex items-center gap-6">
+                                         <div className="w-20 h-20 bg-white rounded-2xl flex items-center justify-center text-blue-600 shadow-md border border-blue-100">
+                                             <Shield size={40} strokeWidth={2} />
+                                         </div>
+                                         <div>
+                                             <h4 className="text-blue-900 font-black text-xl">أرباح المكتب</h4>
+                                             <div className="inline-flex items-center gap-1 bg-blue-200/50 text-blue-800 px-3 py-1 rounded-full text-xs font-bold mt-2">
+                                                 <span>حصة 1/3</span>
+                                             </div>
+                                         </div>
+                                     </div>
+                                     <div className="text-right relative z-10">
+                                         <p className="text-5xl font-black text-blue-600 tracking-tight">{reportData.financials?.officeShare.toLocaleString()}</p>
+                                         <p className="text-blue-800 font-bold mt-1">دينار جزائري (DA)</p>
+                                     </div>
+                                 </div>
+                             </div>
+
+                             {/* Total Summary Footer */}
+                             <div className="mt-6 bg-slate-900 rounded-2xl p-6 text-white flex justify-between items-center shadow-xl">
+                                 <div className="flex items-center gap-4">
+                                     <div className="bg-white/10 p-3 rounded-xl">
+                                         <Package size={24} />
+                                     </div>
+                                     <div>
+                                         <p className="text-slate-400 font-medium">المجموع الكلي (Total)</p>
+                                         <p className="text-sm text-slate-500">{reportData.orders.length} طلبية ناجحة</p>
+                                     </div>
+                                 </div>
+                                 <p className="text-4xl font-black">{reportData.financials?.totalDelivery.toLocaleString()} DA</p>
+                             </div>
+                         </div>
+                    )}
+
+                     {/* --- WORKER DAILY REPORT (OLD WALLET TABLE) --- */}
+                     {reportData.type === 'worker-daily' && (
+                        <div className="break-inside-avoid">
+                           <h3 className="font-bold text-lg mb-2 flex items-center gap-2">
+                              <Wallet size={20} className="text-blue-600" />
+                              الخلاصة المالية (المحفظة)
+                           </h3>
+                           <div className="border-2 border-slate-900 rounded-xl overflow-hidden text-sm">
+                               <div className="bg-slate-900 text-white p-3 flex justify-between items-center">
+                                   <span className="font-bold">الرصيد الافتتاحي (بداية اليوم)</span>
+                                   <span className="font-black text-xl">{reportData.financials?.openingBalance.toLocaleString()} DA</span>
+                               </div>
+                               
+                               <div className="grid grid-cols-2 divide-x divide-x-reverse divide-slate-200 border-b border-slate-200 bg-white">
+                                   <div>
+                                       <div className="flex justify-between p-3 border-b border-slate-100">
+                                           <span className="text-slate-600">مجموع التوصيل</span>
+                                           <span className="font-bold">{reportData.financials?.totalDelivery.toLocaleString()}</span>
+                                       </div>
+                                       <div className="flex justify-between p-3 border-b border-slate-100 bg-slate-50">
+                                           <span className="text-slate-600">فائدة المكتب (1/3)</span>
+                                           <span className="font-bold text-blue-600">{reportData.financials?.officeShare.toLocaleString()}</span>
+                                       </div>
+                                       <div className="flex justify-between p-3 bg-green-50">
+                                           <span className="text-green-700 font-bold">الفائدة (2/3)</span>
+                                           <span className="font-bold text-green-700">{reportData.financials?.workerGrossShare.toLocaleString()}</span>
+                                       </div>
+                                   </div>
+                                   
+                                   <div>
+                                        <div className="flex justify-between p-3 border-b border-slate-100">
+                                           <span className="text-slate-600">مجموع المصروف</span>
+                                           <span className="font-bold text-red-500">-{reportData.financials?.totalExpenses.toLocaleString()}</span>
+                                       </div>
+                                       <div className="flex justify-between p-3 border-b border-slate-100 bg-yellow-50">
+                                           <span className="text-yellow-700 font-bold">الباقي من السعر الكلي (كاش)</span>
+                                           <span className="font-bold text-yellow-700">{reportData.financials?.netCashHand.toLocaleString()}</span>
+                                       </div>
+                                       <div className="flex justify-between p-3 bg-slate-100">
+                                           <span className="font-bold text-slate-800">السعر الكلي (Liquidity)</span>
+                                           <span className="font-bold text-slate-800">{reportData.financials?.totalLiquidity.toLocaleString()}</span>
+                                       </div>
+                                   </div>
+                               </div>
+
+                               <div className="bg-yellow-100 p-3 flex justify-between items-center border-b border-yellow-200 text-yellow-900">
+                                   <span className="font-bold">السعر الكلي الصافي (الرصيد النهائي)</span>
+                                   <span className="font-black text-lg">{reportData.financials?.workerEquity.toLocaleString()} DA</span>
+                               </div>
+                               <div className="bg-green-100 p-3 flex justify-between items-center text-green-900">
+                                   <span className="font-bold">صافي الربح الحقيقي (بعد المصاريف)</span>
+                                   <span className="font-black text-lg">{reportData.financials?.workerNetProfit.toLocaleString()} DA</span>
+                               </div>
+                           </div>
+                       </div>
+                    )}
                 </div>
             )}
 
@@ -3198,8 +3324,8 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
                    <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-gradient-to-r from-slate-900 to-slate-800 border-slate-700' : 'bg-gradient-to-r from-blue-50 to-white border-blue-100'}`}>
                       {/* ... (Upload logic same as before) ... */}
                       <div className="flex justify-between items-center mb-3">
-                          <h4 className={`font-bold flex items-center gap-2 ${isDarkMode ? 'text-white' : 'text-slate-800'}`}><Upload size={18} className="text-blue-400"/> رفع نغمة خاصة</h4>
-                          <span className={`text-[10px] px-2 py-1 rounded ${isDarkMode ? 'text-slate-500 bg-slate-900' : 'text-slate-500 bg-white border border-slate-200'}`}>Max 5MB (MP3/WAV)</span>
+                          <h4 className={`font-bold flex items-center gap-2 ${isDarkMode ? 'text-white' : 'text-slate-800'}`}><Upload size={18} className="text-blue-400"/> موسيقى خاصة (أغاني)</h4>
+                          <span className={`text-[10px] px-2 py-1 rounded ${isDarkMode ? 'text-slate-500 bg-slate-900' : 'text-slate-500 bg-white border border-slate-200'}`}>Max 15MB (MP3)</span>
                       </div>
                       
                       {!pendingCustomAudio ? (
@@ -3218,65 +3344,109 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
                               <div className={`w-10 h-10 rounded-full flex items-center justify-center group-hover:scale-110 transition-transform ${isDarkMode ? 'bg-slate-900' : 'bg-blue-100'}`}>
                                  <Upload size={20} />
                               </div>
-                              <span className="font-bold text-sm">اضغط لاختيار ملف صوتي من الهاتف</span>
+                              <span className="font-bold text-sm">اضغط لاختيار ملف أغنية من الهاتف</span>
                           </button>
                         </>
                       ) : (
-                         <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4 animate-in fade-in slide-in-from-top-2 duration-300">
-                             <div className="flex items-center gap-3 mb-4">
-                                <div className="w-10 h-10 rounded-full bg-blue-500 text-white flex items-center justify-center animate-pulse">
-                                    <Music size={20} />
-                                </div>
-                                <div>
-                                    <p className={`font-bold text-sm ${isDarkMode ? 'text-white' : 'text-slate-800'}`}>تم اختيار الملف بنجاح</p>
-                                    <p className="text-xs text-blue-400">جاري المعاينة... اضغط حفظ للتأكيد</p>
-                                </div>
+                         <div className="bg-blue-600 rounded-xl p-4 animate-in fade-in slide-in-from-top-2 duration-300 shadow-xl overflow-hidden relative">
+                             {/* Music Visualizer Effect Background */}
+                             <div className="absolute inset-0 flex items-end justify-center gap-1 opacity-20 pointer-events-none px-4 pb-2">
+                                 {[...Array(20)].map((_, i) => (
+                                     <MotionDiv
+                                        key={i}
+                                        className="w-full bg-white rounded-t-sm"
+                                        animate={{ height: ['20%', '80%', '40%'] }}
+                                        transition={{ 
+                                            duration: 0.5 + Math.random(), 
+                                            repeat: Infinity, 
+                                            repeatType: "reverse",
+                                            delay: Math.random() * 0.5 
+                                        }}
+                                     />
+                                 ))}
                              </div>
-                             <div className="flex gap-2">
-                                <button onClick={handleSaveCustomTone} className="flex-1 bg-green-600 hover:bg-green-500 text-white py-2 rounded-lg font-bold text-sm flex items-center justify-center gap-2 shadow-lg shadow-green-600/20 transition-all">
-                                    <Check size={16} /> حفظ وتفعيل
-                                </button>
-                                <button onClick={handleCancelCustomTone} className={`flex-1 py-2 rounded-lg font-bold text-sm transition-colors ${isDarkMode ? 'bg-slate-700 hover:bg-slate-600 text-slate-300' : 'bg-white border border-slate-300 hover:bg-slate-50 text-slate-600'}`}>
-                                    إلغاء
-                                </button>
+
+                             <div className="relative z-10">
+                                 <div className="flex items-center gap-4 mb-4">
+                                    <div className="w-12 h-12 rounded-full bg-white/20 text-white flex items-center justify-center border border-white/30 shadow-inner">
+                                        <Disc size={24} className={previewPlayingId === 'custom' ? "animate-spin-slow" : ""} />
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                        <p className="font-black text-white text-lg truncate">{pendingCustomAudioName || 'أغنية جديدة'}</p>
+                                        <div className="flex items-center gap-2 text-blue-100 text-xs mt-1">
+                                            <span className="inline-block w-2 h-2 bg-green-400 rounded-full animate-pulse"></span>
+                                            جاري المعاينة...
+                                        </div>
+                                    </div>
+                                 </div>
+                                 
+                                 <div className="flex gap-2">
+                                    <button onClick={handleSaveCustomTone} className="flex-1 bg-white text-blue-600 hover:bg-blue-50 py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 shadow-lg transition-all transform active:scale-95">
+                                        <Check size={18} strokeWidth={3} /> حفظ وتعيين
+                                    </button>
+                                    <button onClick={handleCancelCustomTone} className="w-12 flex items-center justify-center rounded-xl bg-white/20 hover:bg-white/30 text-white transition-colors">
+                                        <X size={20} />
+                                    </button>
+                                 </div>
                              </div>
                          </div>
                       )}
 
-                      {(liveWorker?.customRingTone || pendingCustomAudio) && (
+                      {/* Display Saved Custom Tone with Player UI */}
+                      {(liveWorker?.customRingTone && !pendingCustomAudio) && (
                           <div 
                              onClick={() => !((previewPlayingId === 'custom')) && handlePreviewTone('custom')}
-                             className={`mt-3 p-3 rounded-lg border flex items-center justify-between cursor-pointer transition-all ${liveWorker.notificationSound === 'custom' ? (isDarkMode ? 'bg-blue-900/30 border-blue-500' : 'bg-blue-50 border-blue-500') : (isDarkMode ? 'bg-slate-900 border-slate-700 hover:border-blue-500/50' : 'bg-white border-slate-200 hover:border-blue-300')}`}
+                             className={`mt-3 p-4 rounded-xl border relative overflow-hidden group cursor-pointer transition-all ${liveWorker.notificationSound === 'custom' ? (isDarkMode ? 'bg-blue-900/30 border-blue-500' : 'bg-blue-50 border-blue-500 shadow-md') : (isDarkMode ? 'bg-slate-900 border-slate-700 hover:border-blue-500/50' : 'bg-white border-slate-200 hover:border-blue-300')}`}
                           >
-                             {/* ... (Custom tone item logic) ... */}
-                             <div className="flex items-center gap-3">
-                                 <div className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors ${previewPlayingId === 'custom' ? 'bg-green-500 text-white animate-pulse' : (isDarkMode ? 'bg-slate-800 text-blue-400' : 'bg-blue-100 text-blue-500')}`}>
-                                     {previewPlayingId === 'custom' ? <Volume2 size={20}/> : <Mic size={20}/>}
+                             {previewPlayingId === 'custom' && (
+                                <div className="absolute inset-0 bg-blue-500/5 pointer-events-none"></div>
+                             )}
+
+                             <div className="flex items-center justify-between relative z-10">
+                                 <div className="flex items-center gap-4 flex-1 min-w-0">
+                                     <div className={`w-12 h-12 rounded-full flex items-center justify-center transition-all ${previewPlayingId === 'custom' ? 'bg-green-500 text-white shadow-lg shadow-green-500/30 scale-110' : (isDarkMode ? 'bg-slate-800 text-blue-400' : 'bg-blue-100 text-blue-500')}`}>
+                                         {previewPlayingId === 'custom' ? <Pause size={20} fill="currentColor"/> : <Play size={20} className="ml-0.5" fill="currentColor"/>}
+                                     </div>
+                                     <div className="flex-1 min-w-0">
+                                         <p className={`font-bold text-base truncate ${liveWorker.notificationSound === 'custom' ? 'text-blue-500' : (isDarkMode ? 'text-white' : 'text-slate-800')}`}>
+                                            {liveWorker.customRingToneName || 'أغنيتي المفضلة'}
+                                         </p>
+                                         <div className="flex items-center gap-2 mt-1">
+                                            <span className="text-[10px] text-slate-500 bg-slate-200/50 dark:bg-slate-700 px-1.5 py-0.5 rounded">MP3/Audio</span>
+                                            {previewPlayingId === 'custom' && <span className="text-[10px] text-green-500 font-bold animate-pulse">جاري التشغيل...</span>}
+                                         </div>
+                                     </div>
                                  </div>
-                                 <div>
-                                     <p className={`font-bold text-sm ${liveWorker.notificationSound === 'custom' ? 'text-blue-400' : (isDarkMode ? 'text-white' : 'text-slate-800')}`}>
-                                        {pendingCustomAudio ? 'نغمة جديدة (قيد الانتظار)' : 'نغمتي الخاصة'}
-                                     </p>
-                                     <p className="text-[10px] text-slate-500">{pendingCustomAudio ? 'غير محفوظة بعد' : 'تم الرفع يدوياً'}</p>
+                                 
+                                 <div className="flex items-center gap-2">
+                                    {previewPlayingId === 'custom' ? (
+                                        <button onClick={(e) => { e.stopPropagation(); stopPreview(); }} className="p-3 bg-red-500/10 text-red-500 rounded-xl hover:bg-red-500/20 transition-all"><Square size={18} fill="currentColor" /></button>
+                                    ) : null}
+                                    
+                                    <button onClick={(e) => { e.stopPropagation(); selectTone('custom'); }} className={`px-4 py-2 rounded-xl text-sm font-bold transition-all shadow-sm ${liveWorker.notificationSound === 'custom' ? 'bg-blue-600 text-white ring-2 ring-blue-300 ring-offset-2 ring-offset-slate-900' : (isDarkMode ? 'bg-slate-700 text-slate-300 hover:bg-slate-600' : 'bg-slate-100 text-slate-600 hover:bg-slate-200')}`}>
+                                        {liveWorker.notificationSound === 'custom' ? 'مفعل' : 'تفعيل'}
+                                    </button>
                                  </div>
                              </div>
-                             <div className="flex items-center gap-2">
-                                {previewPlayingId === 'custom' ? (
-                                    <button onClick={(e) => { e.stopPropagation(); stopPreview(); }} className="p-2 bg-red-500/10 text-red-500 rounded-lg hover:bg-red-500/20"><Square size={16} fill="currentColor" /></button>
-                                ) : (
-                                    <button onClick={(e) => { e.stopPropagation(); handlePreviewTone('custom'); }} className={`p-2 rounded-lg transition-colors ${isDarkMode ? 'bg-slate-700 text-slate-300 hover:bg-green-500 hover:text-white' : 'bg-slate-100 text-slate-600 hover:bg-green-500 hover:text-white'}`}><Play size={16} fill="currentColor" /></button>
-                                )}
-                                <button onClick={(e) => { e.stopPropagation(); selectTone('custom'); }} className={`px-3 py-1.5 rounded-lg text-xs font-bold ${liveWorker.notificationSound === 'custom' ? 'bg-blue-600 text-white' : (isDarkMode ? 'bg-slate-700 text-slate-300' : 'bg-slate-200 text-slate-600')}`}>
-                                    {liveWorker.notificationSound === 'custom' ? 'مفعل' : 'تفعيل'}
-                                </button>
-                             </div>
+                             
+                             {/* Mini Progress Bar Animation (Fake) */}
+                             {previewPlayingId === 'custom' && (
+                                <div className="absolute bottom-0 left-0 h-1 bg-green-500/30 w-full">
+                                    <MotionDiv 
+                                        className="h-full bg-green-500"
+                                        initial={{ width: "0%" }}
+                                        animate={{ width: "100%" }}
+                                        transition={{ duration: 30, ease: "linear" }} // Arbitrary long duration since we don't know file length easily
+                                    />
+                                </div>
+                             )}
                           </div>
                       )}
                   </div>
                   
                   {/* Preset Tones List */}
                   <div className="space-y-2">
-                      <h4 className="font-bold text-slate-400 text-xs px-2">النغمات الافتراضية</h4>
+                      <h4 className="font-bold text-slate-400 text-xs px-2 pt-2">نغمات النظام القصيرة</h4>
                       {SOUND_PRESETS.map((sound) => { 
                           const isSelected = (liveWorker?.notificationSound || 'tone-1') === sound.id; 
                           const isPlaying = previewPlayingId === sound.id; 
@@ -3351,263 +3521,6 @@ const Dashboard: React.FC<DashboardProps> = ({ role, currentUser, onLogout }) =>
                <button onClick={() => setDeleteConfirmation({isOpen: false, workerId: null, workerName: '', isSelf: false})} className="flex-1 bg-slate-700 hover:bg-slate-600 text-white font-bold py-3 rounded-xl transition-colors">إلغاء</button>
              </div>
            </motion.div>
-        </div>
-      )}
-
-      {isSaveConfirmOpen && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
-           <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className={`border border-slate-600 w-full max-w-sm rounded-2xl p-6 shadow-2xl text-center relative overflow-hidden ${isDarkMode ? 'bg-slate-800' : 'bg-white border-slate-200'}`}>
-             <div className="absolute -top-10 -right-10 w-32 h-32 bg-green-500/20 rounded-full blur-3xl"></div>
-             
-             <div className="w-16 h-16 bg-green-500/10 rounded-full flex items-center justify-center mx-auto mb-4 text-green-500 relative z-10 border border-green-500/20">
-                <Check size={32} strokeWidth={3} />
-             </div>
-             <h3 className={`text-xl font-bold mb-2 relative z-10 ${isDarkMode ? 'text-white' : 'text-slate-800'}`}>تأكيد الحفظ</h3>
-             <p className="text-slate-400 text-sm mb-6 leading-relaxed relative z-10">
-               {editingOrder 
-                 ? (role === 'worker' ? 'هل أنت متأكد من إرسال طلب التعديل؟' : 'هل أنت متأكد من حفظ التعديلات على هذا الطلب؟ سيتم إشعار العامل بالتغييرات.')
-                 : 'هل أنت متأكد من إضافة هذا الطلب الجديد؟'
-               }
-             </p>
-             <div className="flex gap-3 relative z-10">
-               <button 
-                 onClick={executeSaveOrder} 
-                 className="flex-1 bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded-xl transition-all shadow-lg shadow-green-600/20 transform active:scale-95"
-               >
-                 تأكيد
-               </button>
-               <button 
-                 onClick={() => setIsSaveConfirmOpen(false)} 
-                 className="flex-1 bg-slate-700 hover:bg-slate-600 text-white font-bold py-3 rounded-xl transition-colors border border-slate-600"
-               >
-                 إلغاء
-               </button>
-             </div>
-           </motion.div>
-        </div>
-      )}
-
-      {isOrderModalOpen && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
-           <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} className={`border w-full max-w-lg rounded-2xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto custom-scrollbar ${isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}>
-            <h3 className={`text-xl font-bold mb-4 flex items-center gap-2 ${isDarkMode ? 'text-white' : 'text-slate-800'}`}>
-                {editingOrder ? <Edit size={24} className="text-blue-500"/> : <Send size={24} className="text-green-500"/>}
-                {editingOrder ? (role === 'worker' ? 'طلب تعديل على المهمة' : 'تعديل تفاصيل الطلب') : 'إرسال طلب جديد'}
-            </h3>
-            {role === 'worker' && editingOrder && (
-                <div className="bg-blue-500/10 border border-blue-500/20 p-3 rounded-xl mb-4 text-sm text-blue-300 flex items-start gap-2">
-                    <AlertCircle size={16} className="shrink-0 mt-0.5" />
-                    <p>ملاحظة: التعديلات التي تقوم بها لن يتم حفظها مباشرة، بل سيتم إرسالها إلى الإدارة للمراجعة والموافقة عليها.</p>
-                </div>
-            )}
-            <form onSubmit={onSubmitOrderForm} className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                 {renderLocationInput(
-                     "نقطة الاستلام",
-                     orderForm.from,
-                     (val) => setOrderForm(prev => ({ ...prev, from: val })),
-                     pickupFavorites,
-                     'pickup',
-                     "مثال: وسط المدينة"
-                 )}
-
-                 {renderLocationInput(
-                     "نقطة التسليم",
-                     orderForm.to,
-                     (val) => setOrderForm(prev => ({ ...prev, to: val })),
-                     dropoffFavorites,
-                     'dropoff',
-                     "مثال: حي النصر"
-                 )}
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                 <div>
-                  <label className="block text-sm text-slate-400 mb-1">السعر (DA)</label>
-                  <input required type="number" className={`w-full border rounded-lg p-2.5 focus:border-red-500 outline-none ${isDarkMode ? 'bg-slate-900 border-slate-600 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'}`} 
-                     value={orderForm.price} onChange={e => setOrderForm({...orderForm, price: e.target.value})} />
-                </div>
-                <div>
-                   <label className="block text-sm text-slate-400 mb-1">هاتف المرسل (استلام)</label>
-                   <input required type="tel" className={`w-full border rounded-lg p-2.5 focus:border-red-500 outline-none ${isDarkMode ? 'bg-slate-900 border-slate-600 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'}`} 
-                     value={orderForm.phone} onChange={e => { const val = e.target.value.replace(/\D/g, '').slice(0, 10); setOrderForm({...orderForm, phone: val}) }} maxLength={10} placeholder="06xxxxxxxx" />
-                </div>
-              </div>
-              <div>
-                 <label className="block text-sm text-slate-400 mb-1">هاتف المستلم (تسليم) - اختياري</label>
-                 <input type="tel" className={`w-full border rounded-lg p-2.5 focus:border-green-500 outline-none ${isDarkMode ? 'bg-slate-900 border-slate-600 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'}`} 
-                   value={orderForm.deliveryPhone} onChange={e => { const val = e.target.value.replace(/\D/g, '').slice(0, 10); setOrderForm({...orderForm, deliveryPhone: val}) }} maxLength={10} placeholder="06xxxxxxxx" />
-              </div>
-
-              <div className="col-span-2">
-                 <label className="block text-sm text-slate-400 mb-1">وصف الطلبية (اختياري)</label>
-                 <textarea className={`w-full border rounded-lg p-2.5 focus:border-red-500 outline-none h-20 resize-none ${isDarkMode ? 'bg-slate-900 border-slate-600 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'}`}
-                   value={orderForm.description} onChange={e => setOrderForm({...orderForm, description: e.target.value})} placeholder="مثال: طرد صغير، قابل للكسر، تفاصيل إضافية..." />
-              </div>
-              
-              {role === 'admin' && (
-                <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-slate-700/30 border-slate-600/50' : 'bg-slate-50 border-slate-200'}`}>
-                    <label className="block text-sm font-bold text-red-400 mb-2">إسناد الطلب إلى عامل (إجباري)</label>
-                    
-                    <div className="space-y-2 max-h-48 overflow-y-auto custom-scrollbar pr-1">
-                        {workers.map(w => {
-                            const isSelected = orderForm.workerId === w.id;
-                            const isActive = w.status === 'active';
-                            return (
-                                <div 
-                                    key={w.id} 
-                                    onClick={() => isActive && setOrderForm({...orderForm, workerId: w.id})}
-                                    className={`
-                                        flex items-center justify-between p-3 rounded-xl border transition-all cursor-pointer
-                                        ${isSelected ? 'bg-red-600/20 border-red-500' : (isDarkMode ? 'bg-slate-800 border-slate-700 hover:border-slate-500' : 'bg-white border-slate-200 hover:border-slate-400')}
-                                        ${!isActive ? 'opacity-50 grayscale cursor-not-allowed' : ''}
-                                    `}
-                                >
-                                    <div className="flex items-center gap-3">
-                                        <div className={`w-4 h-4 rounded-full border-2 ${isSelected ? 'border-red-500 bg-red-500' : 'border-slate-500'}`}>
-                                            {isSelected && <div className="w-full h-full bg-white rounded-full scale-50" />}
-                                        </div>
-                                        <div>
-                                            <p className={`font-bold ${isSelected ? 'text-red-400' : (isDarkMode ? 'text-white' : 'text-slate-800')}`}>{w.name}</p>
-                                            <p className="text-[10px] text-slate-400">{isActive ? 'متاح للعمل' : 'غير متاح'}</p>
-                                        </div>
-                                    </div>
-                                    
-                                    {isActive && (
-                                        <button 
-                                            type="button"
-                                            onClick={(e) => handleNudgeWorker(e, w)}
-                                            className="p-2 bg-green-500/10 text-green-500 hover:bg-green-500 hover:text-white rounded-lg transition-colors"
-                                            title="إرسال تنبيه عبر واتساب"
-                                        >
-                                            <Bell size={18} />
-                                        </button>
-                                    )}
-                                </div>
-                            );
-                        })}
-                        {workers.length === 0 && <p className="text-center text-slate-500 text-sm py-4">لا يوجد عمال مسجلين</p>}
-                    </div>
-
-                    <p className="text-xs text-slate-500 mt-2 flex items-center gap-1">
-                        <AlertCircle size={10} />
-                        زر الجرس يرسل رسالة "ادخل الى الموقع" تلقائياً للسائق.
-                    </p>
-                </div>
-              )}
-
-              <div className="flex gap-3 mt-6">
-                <Button fullWidth type="submit" className={`${role === 'worker' && editingOrder ? '!bg-blue-600 hover:!bg-blue-500 !shadow-blue-600/30' : '!bg-green-600 hover:!bg-green-500 !shadow-green-600/30'}`}>
-                    {editingOrder ? (role === 'worker' ? 'إرسال طلب التعديل' : 'حفظ التعديلات') : 'إرسال الطلب الآن'}
-                </Button>
-                <Button fullWidth type="button" variant="secondary" onClick={() => setIsOrderModalOpen(false)}>إلغاء</Button>
-              </div>
-            </form>
-          </motion.div>
-        </div>
-      )}
-
-      {isRequestsModalOpen && (
-        <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-           {/* ... Admin Requests Modal (Light/Dark optimized) ... */}
-           <MotionDiv 
-             initial={{ scale: 0.9, opacity: 0 }} 
-             animate={{ scale: 1, opacity: 1 }} 
-             exit={{ scale: 0.9, opacity: 0 }} 
-             className={`border border-orange-500/30 w-full max-w-2xl rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh] ${isDarkMode ? 'bg-slate-800' : 'bg-white'}`}
-           >
-             <div className={`p-5 border-b flex justify-between items-center ${isDarkMode ? 'bg-slate-900/50 border-slate-700' : 'bg-slate-50 border-slate-100'}`}>
-                 <div className="flex items-center gap-3">
-                     <div className="bg-orange-500/10 p-2 rounded-lg text-orange-500">
-                         <GitPullRequest size={24} />
-                     </div>
-                     <div>
-                         <h3 className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-slate-800'}`}>طلبات التعديل المعلقة</h3>
-                         <p className="text-xs text-slate-400">مراجعة طلبات التغيير المرسلة من العمال</p>
-                     </div>
-                 </div>
-                 <button onClick={() => setIsRequestsModalOpen(false)} className="p-2 hover:bg-slate-700/20 rounded-lg text-slate-400 hover:text-red-500 transition-colors">
-                     <X size={20} />
-                 </button>
-             </div>
-             
-             <div className="flex-1 overflow-y-auto p-4 custom-scrollbar space-y-4">
-                 {changeRequests.length === 0 ? (
-                     <div className="text-center py-12 text-slate-500">
-                         <CheckCheck size={48} className="mx-auto mb-4 opacity-20" />
-                         <p>لا توجد طلبات معلقة</p>
-                     </div>
-                 ) : (
-                     changeRequests.map(req => {
-                         const originalOrder = orders.find(o => o.id === req.orderId);
-                         const isOrphaned = !originalOrder; 
-                         const isProcessing = processingRequestId === req.id;
-                         
-                         return (
-                             <div key={req.id} className={`border ${isOrphaned ? 'border-red-500/50 bg-red-500/5' : (isDarkMode ? 'bg-slate-900/50 border-slate-700' : 'bg-white border-slate-200 shadow-sm')} rounded-xl p-4 relative ${isProcessing ? 'opacity-50 pointer-events-none' : ''}`}>
-                                 {isProcessing && (
-                                     <div className="absolute inset-0 flex items-center justify-center z-10 bg-slate-900/50 rounded-xl">
-                                         <Loader2 className="animate-spin text-white" size={32} />
-                                     </div>
-                                 )}
-
-                                 <div className={`flex justify-between items-start mb-4 pb-3 border-b ${isDarkMode ? 'border-slate-700/50' : 'border-slate-100'}`}>
-                                     <div className="flex items-center gap-2">
-                                         <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs text-blue-400 border ${isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-blue-50 border-blue-100'}`}>
-                                             {req.workerName.charAt(0)}
-                                         </div>
-                                         <div>
-                                             <p className={`text-sm font-bold ${isDarkMode ? 'text-white' : 'text-slate-800'}`}>{req.workerName}</p>
-                                             <p className="text-[10px] text-slate-500">{req.timestamp}</p>
-                                         </div>
-                                     </div>
-                                     <div className="text-right">
-                                         <span className={`px-2 py-1 rounded text-[10px] font-mono border ${isDarkMode ? 'bg-slate-800 text-slate-300 border-slate-700' : 'bg-slate-100 text-slate-600 border-slate-200'}`}>
-                                             #{req.orderId}
-                                         </span>
-                                     </div>
-                                 </div>
-                                 
-                                 {isOrphaned ? (
-                                     <div className="bg-red-500/10 border border-red-500/20 p-3 rounded-lg mb-4 text-center">
-                                         <p className="text-red-400 font-bold text-sm flex items-center justify-center gap-2">
-                                             <AlertTriangle size={16} />
-                                             الطلب الأصلي محذوف ({req.orderId})
-                                         </p>
-                                         <p className="text-xs text-red-300 mt-1">لا يمكن تطبيق التعديلات. يمكنك فقط حذف الطلب المعلق.</p>
-                                     </div>
-                                 ) : (
-                                     <div className={`space-y-1 mb-4 p-3 rounded-lg border ${isDarkMode ? 'bg-slate-800/50 border-slate-700/30' : 'bg-slate-50 border-slate-200'}`}>
-                                         {renderChangeDiff("السعر", originalOrder?.price, req.newValues.price)}
-                                         {renderChangeDiff("من", originalOrder?.fromLocation, req.newValues.fromLocation)}
-                                         {renderChangeDiff("إلى", originalOrder?.toLocation, req.newValues.toLocation)}
-                                         {renderChangeDiff("هاتف العميل", originalOrder?.customerPhone, req.newValues.customerPhone)}
-                                         {renderChangeDiff("هاتف المستلم", originalOrder?.deliveryPhone, req.newValues.deliveryPhone)}
-                                         {renderChangeDiff("الوصف", originalOrder?.description, req.newValues.description)}
-                                     </div>
-                                 )}
-                                 
-                                 <div className="flex gap-3">
-                                     {!isOrphaned && (
-                                         <button 
-                                             onClick={() => handleApproveRequest(req)}
-                                             className="flex-1 bg-green-600 hover:bg-green-500 text-white py-2 rounded-lg font-bold text-sm flex items-center justify-center gap-2 transition-colors shadow-lg shadow-green-900/20"
-                                         >
-                                             <Check size={16} strokeWidth={3} /> قبول
-                                         </button>
-                                     )}
-                                     <button 
-                                         onClick={() => handleRejectRequest(req)}
-                                         className={`flex-1 ${isOrphaned ? 'bg-red-600 hover:bg-red-500' : 'bg-slate-700 hover:bg-red-600'} text-white py-2 rounded-lg font-bold text-sm flex items-center justify-center gap-2 transition-colors`}
-                                     >
-                                         <Trash2 size={16} /> {isOrphaned ? 'حذف الطلب المعلق' : 'رفض'}
-                                     </button>
-                                 </div>
-                             </div>
-                         );
-                     })
-                 )}
-             </div>
-           </MotionDiv>
         </div>
       )}
     </div>

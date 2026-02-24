@@ -44,6 +44,7 @@ export interface Worker {
   avatar?: string;
   notificationSound?: string; // 'tone-1', 'tone-2', ... or 'custom'
   customRingTone?: string; // Base64 Data URL for custom audio
+  customRingToneName?: string; // Name of the uploaded file
   // GPS Tracking Fields
   latitude?: number;
   longitude?: number;

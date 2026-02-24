@@ -1,5 +1,7 @@
+
 import { initializeApp } from 'firebase/app';
 import { getDatabase } from 'firebase/database';
+import { getMessaging, getToken, onMessage } from 'firebase/messaging';
 
 // --------------------------------------------------------
 // تنبيه هام:
@@ -24,12 +26,14 @@ const firebaseConfig = {
 // Initialize Firebase safely
 let app;
 let db: any = null;
+let messaging: any = null;
 
 try {
     // Only initialize if config looks valid-ish to prevent instant crash on demo
     if (firebaseConfig.apiKey !== "AIzaSyD-YOUR_API_KEY_HERE") {
         app = initializeApp(firebaseConfig);
         db = getDatabase(app);
+        messaging = getMessaging(app);
         console.log("Firebase initialized successfully");
     } else {
         console.warn("Firebase config is default. Running in LocalStorage mode.");
@@ -38,4 +42,4 @@ try {
     console.error("Firebase initialization failed:", error);
 }
 
-export { db };
+export { db, messaging, getToken, onMessage };
